@@ -113,6 +113,11 @@ vehicle.Storage.GetAllItems()                     // Get contents
 **Control override fields (no patching needed):**
 - `overrideControls` (L2909), `throttleOverride` (L2913), `steerOverride` (L2917), `handbrakeOverride` (L2921)
 
+### Driving Behavior Notes
+
+- **Drive timing:** ~22s for 34.5m suggests average ~5.6 km/h on the road graph (well below the 60f TopSpeed) — the AI may be conservative on short trips. Worth noting in case future milestones expect faster transit times.
+- **Last-mile alignment pattern:** "Drive to ParkingLot.EntryPoint → `Vehicle.Park()` snaps the rest" is the canonical approach and will apply identically to LoadingDocks (since `LoadingDock.Parking` is a `ParkingLot` reference).
+
 ---
 
 ## 2. NPC AI System
@@ -647,6 +652,7 @@ For our mod, we could either:
 **Status (validated milestone 1):** `InstanceFinder.ServerManager.Spawn(gameObject)` confirmed as the correct FishNet spawn entry point from MelonLoader in singleplayer/host context. Mod-spawned NetworkBehaviours register and persist correctly.
 
 2. **Vehicle Road Graph Availability.** `VehicleAgent.Navigate()` requires the vehicle to be within 6f of the vehicle road graph. If loading docks are off the road graph, navigation will fail or teleport the vehicle. **Mitigation:** Check `GetDistanceFromVehicleGraph()` before navigating; use `NavigationSettings.ensureProximityToGraph = true`.
+**Status (validated milestone 2):** Downgraded. `ParkingLot.EntryPoint` is graph-connected — no `VehicleTeleporter` triggered during a 34.5m drive between parking lots. Loading docks may still need separate verification in M4, but the parking-lot case is confirmed.
 
 3. **NPC Spawning Without Prefab.** The `EmployeeManager` uses specific prefabs per `EEmployeeType`. We can't add a new enum value cleanly. **Mitigation:** Either clone an existing employee prefab at runtime and modify it, or spawn a generic NPC prefab and manage the driver logic externally (not as a true Employee subclass).
 **Status (validated milestone 1):** Cloning Employee prefabs (BotanistPrefab) and spawning via `InstanceFinder.ServerManager.Spawn()` without calling `Initialize()` works — Awake/Start handle null Property gracefully. No crash, NPC renders and persists.
@@ -661,6 +667,7 @@ For our mod, we could either:
 6. **Loading Dock Occupancy Conflicts.** `LoadingDock.IsInUse` checks for both DynamicOccupant and StaticOccupant. If a delivery is already pending and our driver arrives, there could be conflicts. **Mitigation:** Check `DeliveryManager.IsLoadingBayFree()` before dispatching driver.
 
 7. **AI Pathfinding Failures.** `VehicleAgent.Navigate()` can fail (graph not reachable, stuck detection). The `ENavigationResult.Failed` callback needs robust handling. **Mitigation:** Implement retry logic with exponential backoff; use `VehicleTeleporter` as last resort.
+**Status (validated milestone 2):** Partially downgraded. Short cross-property routes complete cleanly with `ENavigationResult.Complete`. Longer routes and edge cases (blocked paths, distant destinations) are still untested.
 
 ### Low Risk
 
@@ -674,7 +681,9 @@ For our mod, we could either:
 
 ## Validated Assumptions
 
-> Confirmed empirically via the hello-world milestone (working in-game). Future sessions can treat these as ground truth.
+> Confirmed empirically via milestone testing (working in-game). Future sessions can treat these as ground truth.
+
+### Validated in M1 (Hello World)
 
 - **Cloning Employee prefabs without Initialize() is safe.** Cloning BotanistPrefab and spawning without calling `Initialize()` does not crash — `Awake()`/`Start()` handle null `Property` gracefully.
 - **`InstanceFinder.ServerManager.Spawn(gameObject)` is the correct FishNet spawn path.** This is the right entry point for spawning mod-created NetworkBehaviours from a MelonLoader mod in singleplayer/host context.
@@ -682,6 +691,15 @@ For our mod, we could either:
 - **`SaveManager.onSaveStart` and `LoadManager.onLoadComplete` are sufficient for save/load timing.** These UnityEvents fire reliably; we do not need to implement the `Loader.Load()` pipeline or use Harmony patches for persistence.
 - **Writing save data outside the game's managed save folder is stable.** Storing mod data under `Application.persistentDataPath/<modname>/<slotId>.json` bypasses the game's save-folder cleanup and survives reloads without corruption.
 - **Re-registration on scene reload works via `OnSceneWasLoaded`.** After quit-to-menu, `DontDestroyOnLoad` GameObjects survive but `SaveManager.Saveables` gets cleared — re-hooking `OnSceneWasLoaded("Main")` and re-registering handles this correctly.
+
+### Validated in M2 (Driving)
+
+- **`ParkingLot.EntryPoint` positions are reachable on the vehicle road graph.** No teleport-back-to-graph (`VehicleTeleporter`) was triggered during a 34.5m drive between parking lots.
+- **`VehicleAgent.Navigate(destination, settings, callback)` completes successfully for short cross-property distances.** The `ENavigationResult.Complete` callback fired; the failure path was not exercised.
+- **`NPC.EnterVehicle()` and `NPC.ExitVehicle()` work from a mod context without patches.** No Harmony patches or RPC wrapping needed in singleplayer/host.
+- **`NPCMovement.SetDestination(position, callback)` works for mod-driven foot pathfinding.** NPC walked 4.6m to vehicle in 7.7s without issues.
+- **`Vehicle.Park(parkData)` final teleport-snap into the parking spot is intended behavior.** Consistent with vanilla NPC behavior — the visual snap is correct, not a bug.
+- **The full driver state machine flow works end-to-end with no patches.** `Idle → WalkingToVehicle → EnteringVehicle → Driving → Parking → ExitingVehicle → Done` completed successfully.
 
 ---
 
