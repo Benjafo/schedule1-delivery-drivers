@@ -656,9 +656,11 @@ For our mod, we could either:
 
 1. **FishNet Networking Compatibility.** Every major game class extends `NetworkBehaviour` and uses `[ServerRpc]`/`[ObserversRpc]` attributes. Our mod-spawned objects won't have proper network registration. In singleplayer this may be fine (host == client), but in multiplayer we'd need to ensure our NPC/vehicle manipulation goes through the correct RPC channels. **Mitigation:** Start singleplayer-only; wrap all mutations in `if (InstanceFinder.IsServer)` checks.
 **Status (validated milestone 1):** `InstanceFinder.ServerManager.Spawn(gameObject)` confirmed as the correct FishNet spawn entry point from MelonLoader in singleplayer/host context. Mod-spawned NetworkBehaviours register and persist correctly.
+**Status (validated milestone 4):** Further validated. All M4 operations (NPC spawn, vehicle spawn, drive, dock occupancy, cargo transfer, vanilla coexistence) stable in singleplayer. Multiplayer remains untested per scope.
 
 2. **Vehicle Road Graph Availability.** `VehicleAgent.Navigate()` requires the vehicle to be within 6f of the vehicle road graph. If loading docks are off the road graph, navigation will fail or teleport the vehicle. **Mitigation:** Check `GetDistanceFromVehicleGraph()` before navigating; use `NavigationSettings.ensureProximityToGraph = true`.
 **Status (validated milestone 2):** Downgraded. `ParkingLot.EntryPoint` is graph-connected — no `VehicleTeleporter` triggered during a 34.5m drive between parking lots. Loading docks may still need separate verification in M4, but the parking-lot case is confirmed.
+**Status (validated milestone 4):** Fully resolved for ParkingLot and LoadingDock cases. EntryPoints are reliably reachable on the vehicle road graph.
 
 3. **NPC Spawning Without Prefab.** The `EmployeeManager` uses specific prefabs per `EEmployeeType`. We can't add a new enum value cleanly. **Mitigation:** Either clone an existing employee prefab at runtime and modify it, or spawn a generic NPC prefab and manage the driver logic externally (not as a true Employee subclass).
 **Status (validated milestone 1):** Cloning Employee prefabs (BotanistPrefab) and spawning via `InstanceFinder.ServerManager.Spawn()` without calling `Initialize()` works — Awake/Start handle null Property gracefully. No crash, NPC renders and persists.
@@ -671,9 +673,11 @@ For our mod, we could either:
 5. **Game Update Fragility.** The decompiled code has no obfuscation (class/method names are clear), which is good. However, any game update could rename methods, change signatures, or restructure class hierarchies. Vehicle AI (VehicleAgent) is the most complex and likely to change. **Mitigation:** Keep Harmony patches minimal (we need very few); prefer public API calls over patches.
 
 6. **Loading Dock Occupancy Conflicts.** `LoadingDock.IsInUse` checks for both DynamicOccupant and StaticOccupant. If a delivery is already pending and our driver arrives, there could be conflicts. **Mitigation:** Check `DeliveryManager.IsLoadingBayFree()` before dispatching driver.
+**Status (validated milestone 4):** Resolved. `SetStaticOccupant` + null-clear pattern coexists cleanly with vanilla DynamicOccupant flow. `IsInUse` aggregation is correct.
 
 7. **AI Pathfinding Failures.** `VehicleAgent.Navigate()` can fail (graph not reachable, stuck detection). The `ENavigationResult.Failed` callback needs robust handling. **Mitigation:** Implement retry logic with exponential backoff; use `VehicleTeleporter` as last resort.
 **Status (validated milestone 2):** Partially downgraded. Short cross-property routes complete cleanly with `ENavigationResult.Complete`. Longer routes and edge cases (blocked paths, distant destinations) are still untested.
+**Status (validated milestone 4):** Further downgraded. Long-distance routes (~233m) complete cleanly. Failure callback path still untested.
 
 ### Low Risk
 
@@ -717,6 +721,16 @@ For our mod, we could either:
 - **NPC stays in vehicle during cargo transfer without issues.** No need to dismount the NPC at source or destination for plain StorageEntity transfers.
 - **The driver state machine handles two driving legs (pickup + delivery) cleanly.** `VehicleAgent.Navigate` is callable a second time on the same vehicle without re-initialization or stuck states.
 - **Item count logging before/after each transfer matches expectations.** No items lost or duplicated across the full pickup → delivery flow.
+
+### Validated in M4 (Loading Docks)
+
+- **`LoadingDock.SetStaticOccupant(vehicle)` and `SetStaticOccupant(null)` work correctly from a mod context.** No Harmony patch on `RefreshOccupant` needed — direct calls mark docks occupied/released cleanly.
+- **`IsInUse` correctly aggregates StaticOccupant + DynamicOccupant.** When our mod releases static occupancy but a vanilla DynamicOccupant is present, `IsInUse` remains true (correct behavior).
+- **Driver state machine handles dock contention gracefully.** When destination parking has no free spots (e.g. occupied by a vanilla delivery vehicle), `Vehicle.Park()` is skipped and flow continues without crashing — vehicle stops at the parking entry.
+- **Vanilla delivery system and mod driver system coexist without state corruption.** Vanilla deliveries continue working at all docks before, during, and after mod driver activity.
+- **Cargo transfer at docks uses the same direct-Storage transfer pattern as M3.** `OutputSlots` are populated for DynamicOccupants only (not StaticOccupants), so we do not interact with OutputSlots.
+- **Long-distance driving (~233m, Storage Unit → Hyland Manor) completes via `VehicleAgent.Navigate`.** Realistic ~5 minute transit time with no pathfinding failures or stuck detection triggers.
+- **Vehicle-NPC collisions during AI driving are non-fatal and unattributed.** Struck NPCs receive ~36 HP damage and ragdoll, but `DriverPlayer == null` for NPC drivers means no relationship penalty, no wanted-level, no police response, no witness reaction. See ./Mod/INVESTIGATION_VEHICLE_DAMAGE.md.
 
 ---
 
@@ -879,6 +893,14 @@ Option A (suppress magic-spawn) is technically feasible by patching `DeliveryIns
 This uses only public APIs: `StorageEntity.InsertItem()`, `VehicleAgent.Navigate()`, `Vehicle.Park()`, `LoadingDock.SetOccupant()`. The vanilla delivery system continues working independently for shop orders. We check `DeliveryManager.IsLoadingBayFree()` (L201) before dispatching to avoid dock conflicts.
 
 The one Harmony patch worth considering: a **Postfix on `LoadingDock.RefreshOccupant()`** to prevent our driver's vehicle from being cleared as DynamicOccupant while the driver is loading/unloading (since `RefreshOccupant` clears vehicles that leave the trigger zone or exceed 2 km/h). Alternatively, use `SetStaticOccupant()` which isn't cleared by the refresh cycle.
+
+---
+
+## Phase 2 Enhancements (Deferred)
+
+> Ideas surfaced during Phase 1 development. NOT in the current milestone roadmap — for future consideration.
+
+- **Driver "carefulness" stat:** NPCs can hit pedestrians while driving. Per ./Mod/INVESTIGATION_VEHICLE_DAMAGE.md: damage IS applied to struck NPCs (~36 HP at 30 km/h relative speed) but no attribution, relationship penalty, crime, or police response occurs because `DriverPlayer` is null for AI-driven vehicles. The cosmetic concern is NPC ragdolls; the real concern is if a Customer or Dealer is killed by accumulated damage. Phase 2 could add per-driver carefulness affecting routing aggressiveness, speed, and pedestrian avoidance.
 
 ---
 
