@@ -27,6 +27,10 @@
             <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
             <Private>false</Private>
         </Reference>
+        <Reference Include="ScheduleOne.Core">
+            <HintPath>$(ManagedDir)\ScheduleOne.Core.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
 
         <!-- FishNet networking -->
         <Reference Include="FishNet.Runtime">

@@ -34,12 +34,18 @@ namespace DeliveryDriversMod
                 _managerCreated = true;
                 LoggerInstance.Msg("Manager created (NPCSpawner + DeliveryDriverBehaviour)");
             }
-            else if (NPCSpawner.Instance != null)
+            else
             {
                 // Re-register after returning to Main scene (SaveManager.Clean()
                 // clears the Saveables list on scene change).
-                NPCSpawner.Instance.Unregister();
-                NPCSpawner.Instance.Register();
+                if (NPCSpawner.Instance != null)
+                {
+                    NPCSpawner.Instance.Unregister();
+                    NPCSpawner.Instance.Register();
+                }
+
+                // Reset driver state — old NPC/vehicle/storage references are stale
+                DeliveryDriverBehaviour.Instance?.ResetState();
             }
         }
 
@@ -67,6 +73,19 @@ namespace DeliveryDriversMod
                 else if (driver != null && driver.IsRunning)
                 {
                     MelonLogger.Msg("[DeliveryDriversMod] Drive test already in progress");
+                }
+            }
+
+            if (Input.GetKeyDown(KeyCode.F11))
+            {
+                var driver = DeliveryDriverBehaviour.Instance;
+                if (driver != null && !driver.IsRunning)
+                {
+                    driver.TriggerCargoTest();
+                }
+                else if (driver != null && driver.IsRunning)
+                {
+                    MelonLogger.Msg("[DeliveryDriversMod] Test already in progress");
                 }
             }
         }

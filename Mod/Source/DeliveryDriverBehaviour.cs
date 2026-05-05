@@ -1,11 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using FishNet;
 using MelonLoader;
+using ScheduleOne;
 using ScheduleOne.DevUtilities;
+using ScheduleOne.ItemFramework;
 using ScheduleOne.Map;
 using ScheduleOne.NPCs;
 using ScheduleOne.PlayerScripts;
+using ScheduleOne.Storage;
 using ScheduleOne.Vehicles;
 using ScheduleOne.Vehicles.AI;
 using UnityEngine;
@@ -23,14 +27,27 @@ namespace DeliveryDriversMod
             EnteringVehicle,
             Driving,
             Parking,
+            LoadingCargo,
+            UnloadingCargo,
             ExitingVehicle,
             Done
         }
 
+        private enum DeliveryLeg { Pickup, Delivery }
+
+        // Core references
         private NPC _npc;
         private LandVehicle _vehicle;
         private ParkingLot _destination;
 
+        // Cargo test fields (null when running simple F10 drive test)
+        private StorageEntity _sourceStorage;
+        private StorageEntity _destStorage;
+        private ParkingLot _sourceParkingLot;
+        private ParkingLot _destParkingLot;
+        private DeliveryLeg _currentLeg;
+
+        // State
         private DriverState _state = DriverState.Idle;
         private float _stateTimer;
         private Vector3 _walkTarget;
@@ -45,6 +62,9 @@ namespace DeliveryDriversMod
         private const float UNPARK_DELAY = 0.5f;
         private const float VEHICLE_SEARCH_RADIUS = 50f;
         private const float MIN_DESTINATION_DIST = 30f;
+        private const float STORAGE_LOT_SEARCH_RADIUS = 50f;
+        private const string TEST_ITEM_ID = "cash";
+        private const int TEST_ITEM_COUNT = 5;
 
         void Awake()
         {
@@ -55,6 +75,28 @@ namespace DeliveryDriversMod
             }
             Instance = this;
         }
+
+        /// <summary>
+        /// Reset state machine after scene reload (quit-without-save, etc.).
+        /// References to NPC/vehicle/storage are stale after reload.
+        /// </summary>
+        public void ResetState()
+        {
+            if (IsRunning)
+            {
+                MelonLogger.Msg("[DeliveryDriversMod] Resetting stale driver state (" + _state + ")");
+            }
+            _npc = null;
+            _vehicle = null;
+            _destination = null;
+            _sourceStorage = null;
+            _destStorage = null;
+            _sourceParkingLot = null;
+            _destParkingLot = null;
+            _state = DriverState.Idle;
+        }
+
+        #region Test Triggers
 
         public void TriggerDriveTest()
         {
@@ -118,9 +160,102 @@ namespace DeliveryDriversMod
             _npc = npc;
             _vehicle = vehicle;
             _destination = destination;
+            // Cargo fields stay null — simple drive mode
 
             SetState(DriverState.WalkingToVehicle);
         }
+
+        public void TriggerCargoTest()
+        {
+            if (IsRunning)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] Test already in progress");
+                return;
+            }
+
+            if (!InstanceFinder.IsServer)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] Cannot start cargo test: not server");
+                return;
+            }
+
+            if (Player.Local == null)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] Cannot start cargo test: Player.Local is null");
+                return;
+            }
+
+            // Find vehicle
+            var vehicle = FindNearestPlayerVehicle();
+            if (vehicle == null)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
+                return;
+            }
+
+            if (vehicle.Storage == null)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] Vehicle has no Storage component");
+                return;
+            }
+
+            // Find NPC
+            var npcObj = NPCSpawner.Instance?.GetLastSpawnedNPC();
+            if (npcObj == null)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] No spawned NPC available. Spawn one with F9 first");
+                return;
+            }
+            var npc = npcObj.GetComponent<NPC>();
+            if (npc == null)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] Spawned object has no NPC component");
+                return;
+            }
+
+            // Find source + destination storage with nearby parking lots
+            if (!FindCargoLocations(vehicle.transform.position, out StorageEntity srcStorage, out ParkingLot srcLot,
+                    out StorageEntity dstStorage, out ParkingLot dstLot))
+            {
+                return; // Error already logged
+            }
+
+            // Populate source with test items
+            if (!PopulateSourceStorage(srcStorage))
+            {
+                return; // Error already logged
+            }
+
+            // Log setup
+            var playerPos = Player.Local.transform.position;
+            var vehDist = Vector3.Distance(vehicle.transform.position, playerPos);
+            var srcDist = Vector3.Distance(srcLot.EntryPoint.position, vehicle.transform.position);
+            var dstDist = Vector3.Distance(dstLot.EntryPoint.position, srcLot.EntryPoint.position);
+
+            MelonLogger.Msg("[DeliveryDriversMod] F11: Starting cargo transfer test");
+            MelonLogger.Msg("[DeliveryDriversMod]   Vehicle: " + vehicle.name + " at " + vehicle.transform.position + " (distance: " + vehDist.ToString("F1") + "m)");
+            MelonLogger.Msg("[DeliveryDriversMod]   NPC: " + npcObj.name);
+            MelonLogger.Msg("[DeliveryDriversMod]   Source: " + srcStorage.name + " at " + srcStorage.transform.position + ", ParkingLot " + srcDist.ToString("F1") + "m away");
+            MelonLogger.Msg("[DeliveryDriversMod]   Destination: " + dstStorage.name + " at " + dstStorage.transform.position + ", ParkingLot " + dstDist.ToString("F1") + "m from source lot");
+
+            // Set references
+            _npc = npc;
+            _vehicle = vehicle;
+            _sourceStorage = srcStorage;
+            _destStorage = dstStorage;
+            _sourceParkingLot = srcLot;
+            _destParkingLot = dstLot;
+
+            // First leg: drive to source
+            _destination = _sourceParkingLot;
+            _currentLeg = DeliveryLeg.Pickup;
+
+            SetState(DriverState.WalkingToVehicle);
+        }
+
+        #endregion
+
+        #region State Machine
 
         private void SetState(DriverState newState)
         {
@@ -143,6 +278,12 @@ namespace DeliveryDriversMod
                     break;
                 case DriverState.Parking:
                     EnterParking();
+                    break;
+                case DriverState.LoadingCargo:
+                    EnterLoadingCargo();
+                    break;
+                case DriverState.UnloadingCargo:
+                    EnterUnloadingCargo();
                     break;
                 case DriverState.ExitingVehicle:
                     EnterExitingVehicle();
@@ -172,6 +313,8 @@ namespace DeliveryDriversMod
                     break;
             }
         }
+
+        #endregion
 
         #region WalkingToVehicle
 
@@ -287,11 +430,11 @@ namespace DeliveryDriversMod
                         SetState(DriverState.Parking);
                         break;
                     case VehicleAgent.ENavigationResult.Failed:
-                        MelonLogger.Error("[DeliveryDriversMod] Navigation FAILED — aborting drive test");
+                        MelonLogger.Error("[DeliveryDriversMod] Navigation FAILED — aborting");
                         SetState(DriverState.Done);
                         break;
                     case VehicleAgent.ENavigationResult.Stopped:
-                        MelonLogger.Warning("[DeliveryDriversMod] Navigation STOPPED — aborting drive test");
+                        MelonLogger.Warning("[DeliveryDriversMod] Navigation STOPPED — aborting");
                         SetState(DriverState.Done);
                         break;
                 }
@@ -337,7 +480,8 @@ namespace DeliveryDriversMod
                 if (spotIndex == -1)
                 {
                     MelonLogger.Warning("[DeliveryDriversMod] No free parking spots, skipping park");
-                    SetState(DriverState.ExitingVehicle);
+                    // Decide next state even without parking
+                    TransitionAfterParking();
                     return;
                 }
 
@@ -347,13 +491,69 @@ namespace DeliveryDriversMod
                 _vehicle.Park(null, parkData, true);
                 MelonLogger.Msg("[DeliveryDriversMod] Vehicle parked at spot " + spotIndex);
 
-                SetState(DriverState.ExitingVehicle);
+                TransitionAfterParking();
             }
             catch (Exception ex)
             {
                 MelonLogger.Error("[DeliveryDriversMod] Park failed: " + ex);
+                TransitionAfterParking();
+            }
+        }
+
+        private void TransitionAfterParking()
+        {
+            if (_sourceStorage == null)
+            {
+                // Simple drive test (F10) — go straight to exit
                 SetState(DriverState.ExitingVehicle);
             }
+            else if (_currentLeg == DeliveryLeg.Pickup)
+            {
+                SetState(DriverState.LoadingCargo);
+            }
+            else
+            {
+                SetState(DriverState.UnloadingCargo);
+            }
+        }
+
+        #endregion
+
+        #region LoadingCargo
+
+        private void EnterLoadingCargo()
+        {
+            MelonLogger.Msg("[DeliveryDriversMod] Loading cargo from source storage...");
+
+            int count = TransferItems(_sourceStorage, _vehicle.Storage, "LOAD");
+
+            if (count == 0)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] Source was empty — nothing to deliver");
+            }
+
+            // Switch to delivery leg
+            _destination = _destParkingLot;
+            _currentLeg = DeliveryLeg.Delivery;
+            SetState(DriverState.Driving);
+        }
+
+        #endregion
+
+        #region UnloadingCargo
+
+        private void EnterUnloadingCargo()
+        {
+            MelonLogger.Msg("[DeliveryDriversMod] Unloading cargo to destination storage...");
+
+            int count = TransferItems(_vehicle.Storage, _destStorage, "UNLOAD");
+
+            if (count == 0)
+            {
+                MelonLogger.Warning("[DeliveryDriversMod] Vehicle was empty — nothing to unload");
+            }
+
+            SetState(DriverState.ExitingVehicle);
         }
 
         #endregion
@@ -389,13 +589,87 @@ namespace DeliveryDriversMod
         private void EnterDone()
         {
             var exitPos = _npc != null ? _npc.transform.position.ToString() : "unknown";
-            MelonLogger.Msg("[DeliveryDriversMod] Drive test complete: NPC exited at " + exitPos);
 
-            // Clear references
+            if (_sourceStorage != null)
+            {
+                MelonLogger.Msg("[DeliveryDriversMod] Cargo test complete: NPC exited at " + exitPos);
+            }
+            else
+            {
+                MelonLogger.Msg("[DeliveryDriversMod] Drive test complete: NPC exited at " + exitPos);
+            }
+
+            // Clear all references
             _npc = null;
             _vehicle = null;
             _destination = null;
+            _sourceStorage = null;
+            _destStorage = null;
+            _sourceParkingLot = null;
+            _destParkingLot = null;
             _state = DriverState.Idle;
+        }
+
+        #endregion
+
+        #region Cargo Transfer
+
+        private int TransferItems(StorageEntity source, StorageEntity destination, string label)
+        {
+            int totalTransferred = 0;
+            int occupiedSlots = 0;
+
+            // Count source items before transfer
+            foreach (var slot in source.ItemSlots)
+            {
+                if (slot.ItemInstance != null)
+                    occupiedSlots++;
+            }
+            MelonLogger.Msg("[DeliveryDriversMod] " + label + ": source has " + occupiedSlots + " occupied slot(s)");
+
+            // Transfer each occupied slot
+            for (int i = 0; i < source.ItemSlots.Count; i++)
+            {
+                var slot = source.ItemSlots[i];
+                if (slot.ItemInstance == null) continue;
+
+                ItemInstance copy = slot.ItemInstance.GetCopy();
+                int qty = slot.Quantity;
+
+                slot.ClearStoredInstance();
+                destination.InsertItem(copy, true);
+                totalTransferred += qty;
+            }
+
+            MelonLogger.Msg("[DeliveryDriversMod] " + label + ": transferred " + totalTransferred + " item(s)");
+            return totalTransferred;
+        }
+
+        private bool PopulateSourceStorage(StorageEntity source)
+        {
+            try
+            {
+                ItemDefinition def = Registry.GetItem(TEST_ITEM_ID);
+                if (def == null)
+                {
+                    MelonLogger.Error("[DeliveryDriversMod] Registry.GetItem('" + TEST_ITEM_ID + "') returned null");
+                    return false;
+                }
+
+                for (int i = 0; i < TEST_ITEM_COUNT; i++)
+                {
+                    ItemInstance instance = def.GetDefaultInstance(1);
+                    source.InsertItem(instance, true);
+                }
+
+                MelonLogger.Msg("[DeliveryDriversMod] Populated source with " + TEST_ITEM_COUNT + " " + TEST_ITEM_ID);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] Failed to populate source storage: " + ex);
+                return false;
+            }
         }
 
         #endregion
@@ -451,6 +725,106 @@ namespace DeliveryDriversMod
             }
 
             return candidate;
+        }
+
+        private ParkingLot FindNearestParkingLotTo(Vector3 position, float maxDistance)
+        {
+            return FindObjectsOfType<ParkingLot>()
+                .Where(l => l != null && l.EntryPoint != null && l.GetRandomFreeSpotIndex() != -1)
+                .Where(l => Vector3.Distance(l.EntryPoint.position, position) < maxDistance)
+                .OrderBy(l => Vector3.Distance(l.EntryPoint.position, position))
+                .FirstOrDefault();
+        }
+
+        private bool FindCargoLocations(Vector3 vehiclePos,
+            out StorageEntity srcStorage, out ParkingLot srcLot,
+            out StorageEntity dstStorage, out ParkingLot dstLot)
+        {
+            srcStorage = null;
+            srcLot = null;
+            dstStorage = null;
+            dstLot = null;
+
+            var allStorage = WorldStorageEntity.All;
+            MelonLogger.Msg("[DeliveryDriversMod] Found " + allStorage.Count + " WorldStorageEntity(s) in world");
+
+            if (allStorage.Count == 0)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] No WorldStorageEntities found — cannot run cargo test. " +
+                    "Player needs at least one property with storage.");
+                return false;
+            }
+
+            // Build candidates: storage entities paired with their nearest ParkingLot
+            var candidates = new List<CargoCandidate>();
+            foreach (var storage in allStorage)
+            {
+                if (storage == null || !storage.gameObject.activeInHierarchy) continue;
+
+                var lot = FindNearestParkingLotTo(storage.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                if (lot == null) continue;
+
+                float lotDist = Vector3.Distance(lot.EntryPoint.position, storage.transform.position);
+                candidates.Add(new CargoCandidate
+                {
+                    storage = storage,
+                    parkingLot = lot,
+                    lotDistance = lotDist
+                });
+            }
+
+            candidates.Sort((a, b) => a.lotDistance.CompareTo(b.lotDistance));
+
+            MelonLogger.Msg("[DeliveryDriversMod] " + candidates.Count + " storage(s) have a ParkingLot within " + STORAGE_LOT_SEARCH_RADIUS + "m");
+
+            if (candidates.Count < 2)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] Need at least 2 storage entities near ParkingLots, found " + candidates.Count);
+                return false;
+            }
+
+            // Pick source: closest candidate to vehicle
+            var source = candidates
+                .OrderBy(c => Vector3.Distance(c.parkingLot.EntryPoint.position, vehiclePos))
+                .First();
+
+            // Pick destination: different ParkingLot, prefer >30m from source lot
+            CargoCandidate dest = null;
+            foreach (var c in candidates)
+            {
+                if (c.parkingLot == source.parkingLot) continue;
+                float separation = Vector3.Distance(c.parkingLot.EntryPoint.position, source.parkingLot.EntryPoint.position);
+                if (separation > MIN_DESTINATION_DIST)
+                {
+                    dest = c;
+                    break;
+                }
+            }
+
+            // Fallback: any candidate with a different parking lot
+            if (dest == null)
+            {
+                dest = candidates.FirstOrDefault(c => c.parkingLot != source.parkingLot);
+            }
+
+            if (dest == null)
+            {
+                MelonLogger.Error("[DeliveryDriversMod] All storage candidates share the same ParkingLot — cannot run cargo test");
+                return false;
+            }
+
+            srcStorage = source.storage;
+            srcLot = source.parkingLot;
+            dstStorage = dest.storage;
+            dstLot = dest.parkingLot;
+            return true;
+        }
+
+        private class CargoCandidate
+        {
+            public StorageEntity storage;
+            public ParkingLot parkingLot;
+            public float lotDistance;
         }
 
         #endregion

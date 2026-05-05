@@ -418,7 +418,26 @@ No new files. No changes to `NPCSpawner.cs` or `SpawnedNPCData.cs`.
 
 ---
 
-## 12. What This Does NOT Cover
+## 12. Success Criteria
+
+- [ ] F11 with nearby vehicle + spawned NPC starts the cargo transfer test
+- [ ] Source and destination WorldStorageEntities are discovered automatically and logged
+- [ ] Source storage is populated with 5 cash items before the state machine starts
+- [ ] NPC walks (or warps) to vehicle and enters driver seat
+- [ ] Vehicle drives to source ParkingLot and parks
+- [ ] Items transfer from source StorageEntity into vehicle's Storage (LOAD log shows count > 0)
+- [ ] NPC stays in vehicle (no exit/re-enter between legs)
+- [ ] Vehicle drives to destination ParkingLot and parks
+- [ ] Items transfer from vehicle's Storage to destination StorageEntity (UNLOAD log shows count > 0)
+- [ ] NPC exits vehicle
+- [ ] Logs appear at each phase transition with item counts before/after each transfer
+- [ ] No unhandled exceptions during the full flow
+- [ ] F10 simple drive test still works unchanged
+- [ ] F11 can be pressed again after completion for another test run
+
+---
+
+## 13. What This Does NOT Cover
 
 Per scope rules:
 - No LoadingDock integration (M4)
