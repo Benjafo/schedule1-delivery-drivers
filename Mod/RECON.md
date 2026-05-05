@@ -377,6 +377,12 @@ ItemDefinition def = Registry.GetItem("item_id");
 ItemInstance instance = def.GetDefaultInstance(quantity);
 ```
 
+### Cargo Transfer Notes
+
+> Confirmed working pattern from M3 testing.
+
+The validated transfer sequence is: **Get → Copy → Clear source → Insert dest.** Specifically: read `ItemSlot.ItemInstance`, call `GetCopy(quantity)`, call `ClearStoredInstance()` on the source slot, then `StorageEntity.InsertItem(copy, true)` on the destination. Testing used `Registry.GetItem("ogkush")` with `GetDefaultInstance(5)` to seed source storage. No timing delays were needed between clear and insert — the operations are synchronous in singleplayer/host context. The NPC remained seated in the vehicle throughout both the pickup and delivery transfers.
+
 ---
 
 ## 5. Time / Day Cycle
@@ -674,6 +680,7 @@ For our mod, we could either:
 8. **Employee Wage Cash-Register Model.** The existing wage system requires physical cash in an EmployeeHome. If we use a different payment model (direct bank deduction), this is simpler but diverges from vanilla behavior. Players may find it inconsistent. **Mitigation:** Offer both options in mod config.
 
 9. **Vehicle Storage Slot Limits.** `StorageEntity.MAX_SLOTS = 20`. If cargo exceeds slot capacity, items will be lost. **Mitigation:** Check `HowManyCanFit()` before loading; split large shipments.
+**Status (validated milestone 3):** Confirmed manageable. Test transfers stayed within the 20-slot limit and completed cleanly. Real implementation should still call `HowManyCanFit()` before bulk inserts to handle edge cases.
 
 10. **NavMesh/Vehicle Graph Mismatch.** NPCs walk on NavMesh; vehicles drive on the vehicle road graph. The transition point (NPC walks to parked vehicle) needs both systems to connect at the vehicle's position. If a vehicle is parked somewhere the NavMesh can't reach, the NPC can't get to it. **Mitigation:** Park vehicles at known accessible locations (existing ParkingLots have both graph connections).
 
@@ -700,6 +707,16 @@ For our mod, we could either:
 - **`NPCMovement.SetDestination(position, callback)` works for mod-driven foot pathfinding.** NPC walked 4.6m to vehicle in 7.7s without issues.
 - **`Vehicle.Park(parkData)` final teleport-snap into the parking spot is intended behavior.** Consistent with vanilla NPC behavior — the visual snap is correct, not a bug.
 - **The full driver state machine flow works end-to-end with no patches.** `Idle → WalkingToVehicle → EnteringVehicle → Driving → Parking → ExitingVehicle → Done` completed successfully.
+
+### Validated in M3 (Cargo Transfer)
+
+- **`StorageEntity.InsertItem(itemInstance, networkUpdate)` works from a mod context.** Successfully transfers items into a vehicle's Storage and into a destination StorageEntity — no RPC wrapping or Harmony patches needed.
+- **`ItemSlot.ClearStoredInstance()` reliably empties source slots.** No orphan state or duplicate items observed after clearing — source slots are clean for reuse.
+- **`ItemInstance.GetCopy(quantity)` produces transferable item instances.** Copied instances survive insertion into different containers without state loss or corruption.
+- **`Registry.GetItem(itemId)` and `ItemDefinition.GetDefaultInstance(quantity)` are valid for programmatic item creation.** Used to create test items from a mod — instances are fully functional and insertable.
+- **NPC stays in vehicle during cargo transfer without issues.** No need to dismount the NPC at source or destination for plain StorageEntity transfers.
+- **The driver state machine handles two driving legs (pickup + delivery) cleanly.** `VehicleAgent.Navigate` is callable a second time on the same vehicle without re-initialization or stuck states.
+- **Item count logging before/after each transfer matches expectations.** No items lost or duplicated across the full pickup → delivery flow.
 
 ---
 
