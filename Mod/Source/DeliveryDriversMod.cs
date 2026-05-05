@@ -1,8 +1,12 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using FishNet;
 using MelonLoader;
+using ScheduleOne.Delivery;
 using ScheduleOne.DevUtilities;
 using ScheduleOne.PlayerScripts;
+using ScheduleOne.Property;
 using ScheduleOne.Vehicles;
 using UnityEngine;
 
@@ -28,7 +32,7 @@ namespace DeliveryDriversMod
             if (!_managerCreated)
             {
                 var go = new GameObject("DeliveryDriverMod_Manager");
-                Object.DontDestroyOnLoad(go);
+                UnityEngine.Object.DontDestroyOnLoad(go);
                 go.AddComponent<NPCSpawner>();
                 go.AddComponent<DeliveryDriverBehaviour>();
                 _managerCreated = true;
@@ -52,6 +56,11 @@ namespace DeliveryDriversMod
         public override void OnUpdate()
         {
             if (NPCSpawner.Instance == null) return;
+
+            if (Input.GetKeyDown(KeyCode.F7))
+            {
+                GrantPropertyOwnership();
+            }
 
             if (Input.GetKeyDown(KeyCode.F8))
             {
@@ -88,6 +97,67 @@ namespace DeliveryDriversMod
                     MelonLogger.Msg("Test already in progress");
                 }
             }
+
+            if (Input.GetKeyDown(KeyCode.F12))
+            {
+                var driver = DeliveryDriverBehaviour.Instance;
+                if (driver != null && !driver.IsRunning)
+                {
+                    driver.TriggerDockTest();
+                }
+                else if (driver != null && driver.IsRunning)
+                {
+                    MelonLogger.Msg("Test already in progress");
+                }
+            }
+        }
+
+        private void GrantPropertyOwnership()
+        {
+            if (!InstanceFinder.IsServer)
+            {
+                MelonLogger.Warning("Cannot grant ownership: not server");
+                return;
+            }
+
+            // Find unowned properties that have loading docks
+            var candidates = Property.UnownedProperties
+                .Where(p => p != null && p.LoadingDocks != null && p.LoadingDocks.Length > 0)
+                .Where(p => p.LoadingDocks.Any(d => d != null && d.Parking != null))
+                .ToList();
+
+            // Count how many owned properties already have docks
+            int ownedWithDocks = Property.OwnedProperties
+                .Count(p => p != null && p.LoadingDocks != null && p.LoadingDocks.Length > 0
+                    && p.LoadingDocks.Any(d => d != null && d.Parking != null));
+
+            int needed = Math.Max(0, 2 - ownedWithDocks);
+
+            if (needed == 0)
+            {
+                MelonLogger.Msg("F7: Already own " + ownedWithDocks +
+                    " properties with loading docks — no grant needed");
+                return;
+            }
+
+            if (candidates.Count < needed)
+            {
+                MelonLogger.Warning("F7: Need " + needed +
+                    " more properties with docks, but only " + candidates.Count +
+                    " unowned candidates exist");
+            }
+
+            int granted = 0;
+            foreach (var prop in candidates.Take(needed))
+            {
+                MelonLogger.Msg("F7: Granting ownership of '" + prop.PropertyName +
+                    "' (code: " + prop.PropertyCode + ", docks: " + prop.LoadingDockCount + ")");
+                prop.SetOwned();
+                granted++;
+            }
+
+            MelonLogger.Msg("F7: Granted " + granted + " properties. Total owned with docks: " +
+                (ownedWithDocks + granted));
         }
 
         private void SpawnTestVehicle()

@@ -4,11 +4,13 @@ using System.Linq;
 using FishNet;
 using MelonLoader;
 using ScheduleOne;
+using ScheduleOne.Delivery;
 using ScheduleOne.DevUtilities;
 using ScheduleOne.ItemFramework;
 using ScheduleOne.Map;
 using ScheduleOne.NPCs;
 using ScheduleOne.PlayerScripts;
+using ScheduleOne.Property;
 using ScheduleOne.Storage;
 using ScheduleOne.Vehicles;
 using ScheduleOne.Vehicles.AI;
@@ -29,6 +31,8 @@ namespace DeliveryDriversMod
             Parking,
             LoadingCargo,
             UnloadingCargo,
+            OccupyingDock,
+            ReleasingDock,
             ExitingVehicle,
             Done
         }
@@ -46,6 +50,10 @@ namespace DeliveryDriversMod
         private ParkingLot _sourceParkingLot;
         private ParkingLot _destParkingLot;
         private DeliveryLeg _currentLeg;
+
+        // Dock test fields (null when running F10 or F11 tests)
+        private LoadingDock _sourceDock;
+        private LoadingDock _destDock;
 
         // State
         private DriverState _state = DriverState.Idle;
@@ -93,6 +101,8 @@ namespace DeliveryDriversMod
             _destStorage = null;
             _sourceParkingLot = null;
             _destParkingLot = null;
+            _sourceDock = null;
+            _destDock = null;
             _state = DriverState.Idle;
         }
 
@@ -253,6 +263,99 @@ namespace DeliveryDriversMod
             SetState(DriverState.WalkingToVehicle);
         }
 
+        public void TriggerDockTest()
+        {
+            if (IsRunning)
+            {
+                MelonLogger.Warning("Test already in progress");
+                return;
+            }
+
+            if (!InstanceFinder.IsServer)
+            {
+                MelonLogger.Warning("Cannot start dock test: not server");
+                return;
+            }
+
+            if (Player.Local == null)
+            {
+                MelonLogger.Warning("Cannot start dock test: Player.Local is null");
+                return;
+            }
+
+            // Find vehicle
+            var vehicle = FindNearestPlayerVehicle();
+            if (vehicle == null)
+            {
+                MelonLogger.Warning("No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
+                return;
+            }
+
+            if (vehicle.Storage == null)
+            {
+                MelonLogger.Error("Vehicle has no Storage component");
+                return;
+            }
+
+            // Find NPC
+            var npcObj = NPCSpawner.Instance?.GetLastSpawnedNPC();
+            if (npcObj == null)
+            {
+                MelonLogger.Warning("No spawned NPC available. Spawn one with F9 first");
+                return;
+            }
+            var npc = npcObj.GetComponent<NPC>();
+            if (npc == null)
+            {
+                MelonLogger.Error("Spawned object has no NPC component");
+                return;
+            }
+
+            // Find two LoadingDock instances
+            if (!FindDockLocations(vehicle.transform.position, out LoadingDock srcDock, out ParkingLot srcLot,
+                    out LoadingDock dstDock, out ParkingLot dstLot))
+            {
+                return; // Error already logged
+            }
+
+            // Pre-populate vehicle with test items
+            if (!PopulateSourceStorage(vehicle.Storage))
+            {
+                return; // Error already logged
+            }
+
+            // Log setup
+            var playerPos = Player.Local.transform.position;
+            var vehDist = Vector3.Distance(vehicle.transform.position, playerPos);
+            var srcDist = Vector3.Distance(srcLot.EntryPoint.position, vehicle.transform.position);
+            var dstDist = Vector3.Distance(dstLot.EntryPoint.position, srcLot.EntryPoint.position);
+
+            MelonLogger.Msg("F12: Starting dock test");
+            MelonLogger.Msg("  Vehicle: " + vehicle.name + " at " + vehicle.transform.position +
+                " (distance: " + vehDist.ToString("F1") + "m)");
+            MelonLogger.Msg("  NPC: " + npcObj.name);
+            MelonLogger.Msg("  Source: " + srcDock.Name + " (" + srcDock.ParentProperty.PropertyName +
+                "), parking entry at " + srcLot.EntryPoint.position +
+                " (distance: " + srcDist.ToString("F1") + "m)");
+            MelonLogger.Msg("  Dest: " + dstDock.Name + " (" + dstDock.ParentProperty.PropertyName +
+                "), parking entry at " + dstLot.EntryPoint.position +
+                " (distance: " + dstDist.ToString("F1") + "m from source)");
+
+            // Set references
+            _npc = npc;
+            _vehicle = vehicle;
+            _sourceDock = srcDock;
+            _destDock = dstDock;
+            _sourceParkingLot = srcLot;
+            _destParkingLot = dstLot;
+
+            // First leg: drive to source dock
+            _destination = _sourceParkingLot;
+            _currentLeg = DeliveryLeg.Pickup;
+
+            SetState(DriverState.WalkingToVehicle);
+        }
+
         #endregion
 
         #region State Machine
@@ -284,6 +387,12 @@ namespace DeliveryDriversMod
                     break;
                 case DriverState.UnloadingCargo:
                     EnterUnloadingCargo();
+                    break;
+                case DriverState.OccupyingDock:
+                    EnterOccupyingDock();
+                    break;
+                case DriverState.ReleasingDock:
+                    EnterReleasingDock();
                     break;
                 case DriverState.ExitingVehicle:
                     EnterExitingVehicle();
@@ -502,7 +611,12 @@ namespace DeliveryDriversMod
 
         private void TransitionAfterParking()
         {
-            if (_sourceStorage == null)
+            if (_sourceDock != null)
+            {
+                // Dock test (F12) — occupy dock before cargo
+                SetState(DriverState.OccupyingDock);
+            }
+            else if (_sourceStorage == null)
             {
                 // Simple drive test (F10) — go straight to exit
                 SetState(DriverState.ExitingVehicle);
@@ -523,19 +637,28 @@ namespace DeliveryDriversMod
 
         private void EnterLoadingCargo()
         {
-            MelonLogger.Msg("Loading cargo from source storage...");
-
-            int count = TransferItems(_sourceStorage, _vehicle.Storage, "LOAD");
-
-            if (count == 0)
+            if (_sourceDock != null)
             {
-                MelonLogger.Warning("Source was empty — nothing to deliver");
-            }
+                // Dock mode: items are pre-populated in vehicle.
+                // Log that dock OutputSlots reflect vehicle storage.
+                MelonLogger.Msg("DOCK LOAD: Vehicle has " + CountOccupiedSlots(_vehicle.Storage) + " occupied slots");
+                MelonLogger.Msg("DOCK LOAD: Dock OutputSlots count = " + _sourceDock.OutputSlots.Count);
 
-            // Switch to delivery leg
-            _destination = _destParkingLot;
-            _currentLeg = DeliveryLeg.Delivery;
-            SetState(DriverState.Driving);
+                // No transfer needed — items are already in the vehicle
+                SetState(DriverState.ReleasingDock);
+            }
+            else
+            {
+                // M3 cargo test mode: transfer from external storage
+                MelonLogger.Msg("Loading cargo from source storage...");
+                int count = TransferItems(_sourceStorage, _vehicle.Storage, "LOAD");
+                if (count == 0)
+                    MelonLogger.Warning("Source was empty — nothing to deliver");
+
+                _destination = _destParkingLot;
+                _currentLeg = DeliveryLeg.Delivery;
+                SetState(DriverState.Driving);
+            }
         }
 
         #endregion
@@ -544,16 +667,89 @@ namespace DeliveryDriversMod
 
         private void EnterUnloadingCargo()
         {
-            MelonLogger.Msg("Unloading cargo to destination storage...");
-
-            int count = TransferItems(_vehicle.Storage, _destStorage, "UNLOAD");
-
-            if (count == 0)
+            if (_destDock != null)
             {
-                MelonLogger.Warning("Vehicle was empty — nothing to unload");
-            }
+                // Dock mode: log dock state, transfer to nearby WorldStorageEntity if available
+                MelonLogger.Msg("DOCK UNLOAD: Vehicle has " + CountOccupiedSlots(_vehicle.Storage) + " occupied slots");
+                MelonLogger.Msg("DOCK UNLOAD: Dock OutputSlots count = " + _destDock.OutputSlots.Count);
 
-            SetState(DriverState.ExitingVehicle);
+                var nearbyStorage = FindNearestWorldStorage(_destDock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                if (nearbyStorage != null)
+                {
+                    MelonLogger.Msg("DOCK UNLOAD: Found nearby storage " + nearbyStorage.name + ", transferring...");
+                    int count = TransferItems(_vehicle.Storage, nearbyStorage, "DOCK_UNLOAD");
+                    MelonLogger.Msg("DOCK UNLOAD: Transferred " + count + " items to " + nearbyStorage.name);
+                }
+                else
+                {
+                    MelonLogger.Msg("DOCK UNLOAD: No nearby WorldStorageEntity — items remain in vehicle");
+                }
+
+                SetState(DriverState.ReleasingDock);
+            }
+            else
+            {
+                // M3 cargo test mode
+                MelonLogger.Msg("Unloading cargo to destination storage...");
+                int count = TransferItems(_vehicle.Storage, _destStorage, "UNLOAD");
+                if (count == 0)
+                    MelonLogger.Warning("Vehicle was empty — nothing to unload");
+
+                SetState(DriverState.ExitingVehicle);
+            }
+        }
+
+        #endregion
+
+        #region OccupyingDock
+
+        private void EnterOccupyingDock()
+        {
+            LoadingDock dock = (_currentLeg == DeliveryLeg.Pickup) ? _sourceDock : _destDock;
+
+            MelonLogger.Msg("Setting dock occupancy: " + dock.Name +
+                " (property: " + dock.ParentProperty.PropertyName + ")");
+
+            dock.SetStaticOccupant(_vehicle);
+
+            MelonLogger.Msg("  StaticOccupant set: " + (dock.StaticOccupant != null));
+            MelonLogger.Msg("  IsInUse: " + dock.IsInUse);
+            MelonLogger.Msg("  Vehicle storage slots: " + _vehicle.Storage.ItemSlots.Count);
+
+            // Transition to cargo transfer
+            if (_currentLeg == DeliveryLeg.Pickup)
+                SetState(DriverState.LoadingCargo);
+            else
+                SetState(DriverState.UnloadingCargo);
+        }
+
+        #endregion
+
+        #region ReleasingDock
+
+        private void EnterReleasingDock()
+        {
+            LoadingDock dock = (_currentLeg == DeliveryLeg.Pickup) ? _sourceDock : _destDock;
+
+            MelonLogger.Msg("Releasing dock: " + dock.Name);
+
+            dock.SetStaticOccupant(null);
+            dock.VehicleDetector.Clear();
+
+            MelonLogger.Msg("  StaticOccupant cleared: " + (dock.StaticOccupant == null));
+            MelonLogger.Msg("  IsInUse: " + dock.IsInUse);
+
+            if (_currentLeg == DeliveryLeg.Pickup)
+            {
+                // Switch to delivery leg
+                _destination = _destParkingLot;
+                _currentLeg = DeliveryLeg.Delivery;
+                SetState(DriverState.Driving);
+            }
+            else
+            {
+                SetState(DriverState.ExitingVehicle);
+            }
         }
 
         #endregion
@@ -590,7 +786,11 @@ namespace DeliveryDriversMod
         {
             var exitPos = _npc != null ? _npc.transform.position.ToString() : "unknown";
 
-            if (_sourceStorage != null)
+            if (_sourceDock != null)
+            {
+                MelonLogger.Msg("Dock test complete: NPC exited at " + exitPos);
+            }
+            else if (_sourceStorage != null)
             {
                 MelonLogger.Msg("Cargo test complete: NPC exited at " + exitPos);
             }
@@ -607,6 +807,8 @@ namespace DeliveryDriversMod
             _destStorage = null;
             _sourceParkingLot = null;
             _destParkingLot = null;
+            _sourceDock = null;
+            _destDock = null;
             _state = DriverState.Idle;
         }
 
@@ -670,6 +872,23 @@ namespace DeliveryDriversMod
                 MelonLogger.Error("Failed to populate source storage: " + ex);
                 return false;
             }
+        }
+
+        private int CountOccupiedSlots(StorageEntity storage)
+        {
+            int count = 0;
+            foreach (var slot in storage.ItemSlots)
+                if (slot.ItemInstance != null) count++;
+            return count;
+        }
+
+        private WorldStorageEntity FindNearestWorldStorage(Vector3 position, float maxDistance)
+        {
+            return WorldStorageEntity.All
+                .Where(s => s != null && s.gameObject.activeInHierarchy)
+                .Where(s => Vector3.Distance(s.transform.position, position) < maxDistance)
+                .OrderBy(s => Vector3.Distance(s.transform.position, position))
+                .FirstOrDefault();
         }
 
         #endregion
@@ -825,6 +1044,98 @@ namespace DeliveryDriversMod
             public StorageEntity storage;
             public ParkingLot parkingLot;
             public float lotDistance;
+        }
+
+        private bool FindDockLocations(Vector3 vehiclePos,
+            out LoadingDock srcDock, out ParkingLot srcLot,
+            out LoadingDock dstDock, out ParkingLot dstLot)
+        {
+            srcDock = null; srcLot = null; dstDock = null; dstLot = null;
+
+            // Enumerate docks from owned properties only
+            var docks = new List<LoadingDock>();
+            foreach (var prop in Property.OwnedProperties)
+            {
+                if (prop?.LoadingDocks == null) continue;
+                foreach (var dock in prop.LoadingDocks)
+                {
+                    if (dock?.Parking?.EntryPoint != null)
+                        docks.Add(dock);
+                }
+            }
+
+            MelonLogger.Msg("Found " + docks.Count + " LoadingDock(s) across " +
+                Property.OwnedProperties.Count + " owned properties");
+
+            if (docks.Count < 2)
+            {
+                MelonLogger.Error("Need at least 2 LoadingDocks on owned properties. Found " + docks.Count +
+                    ". Press F7 to grant ownership of properties with docks.");
+                return false;
+            }
+
+            // Log all found docks for debugging
+            foreach (var d in docks)
+            {
+                MelonLogger.Msg("  Dock: " + d.Name + " at " + d.ParentProperty.PropertyName +
+                    ", parking entry: " + d.Parking.EntryPoint.position +
+                    ", inUse: " + d.IsInUse);
+            }
+
+            // Pick source: closest property to vehicle, then first free dock at that property
+            var sourceProperty = Property.OwnedProperties
+                .Where(p => p?.LoadingDocks != null && p.LoadingDocks.Any(d => d != null && d.Parking?.EntryPoint != null))
+                .OrderBy(p => p.LoadingDocks
+                    .Where(d => d?.Parking?.EntryPoint != null)
+                    .Min(d => Vector3.Distance(d.Parking.EntryPoint.position, vehiclePos)))
+                .First();
+
+            var source = sourceProperty.LoadingDocks
+                .Where(d => d?.Parking?.EntryPoint != null)
+                .FirstOrDefault(d => !d.IsInUse)
+                ?? sourceProperty.LoadingDocks.First(d => d?.Parking?.EntryPoint != null);
+
+            // Pick dest: first free dock at a different property
+            var destProperty = Property.OwnedProperties
+                .Where(p => p != null && p != sourceProperty && p.LoadingDocks != null
+                    && p.LoadingDocks.Any(d => d != null && d.Parking?.EntryPoint != null))
+                .FirstOrDefault();
+
+            // Fallback: different dock on same property
+            LoadingDock dest = null;
+            if (destProperty != null)
+            {
+                dest = destProperty.LoadingDocks
+                    .Where(d => d?.Parking?.EntryPoint != null)
+                    .FirstOrDefault(d => !d.IsInUse)
+                    ?? destProperty.LoadingDocks.First(d => d?.Parking?.EntryPoint != null);
+            }
+            else
+            {
+                dest = sourceProperty.LoadingDocks
+                    .Where(d => d != null && d != source && d.Parking?.EntryPoint != null)
+                    .FirstOrDefault(d => !d.IsInUse)
+                    ?? sourceProperty.LoadingDocks
+                        .FirstOrDefault(d => d != null && d != source && d.Parking?.EntryPoint != null);
+            }
+
+            if (dest == null)
+            {
+                MelonLogger.Error("Could not find a second dock different from source");
+                return false;
+            }
+
+            // Warn if either dock is currently in use
+            if (source.IsInUse)
+                MelonLogger.Warning("Source dock is currently in use — may conflict with vanilla delivery");
+            if (dest.IsInUse)
+                MelonLogger.Warning("Dest dock is currently in use — may conflict with vanilla delivery");
+
+            srcDock = source;
+            srcLot = source.Parking;
+            dstDock = dest;
+            dstLot = dest.Parking;
+            return true;
         }
 
         #endregion
