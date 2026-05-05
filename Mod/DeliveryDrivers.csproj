@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net472</TargetFramework>
+        <AssemblyName>DeliveryDriversMod</AssemblyName>
+        <RootNamespace>DeliveryDriversMod</RootNamespace>
+        <LangVersion>latest</LangVersion>
+        <Nullable>disable</Nullable>
+        <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+        <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    
+        <!-- VARS -->
+        <GameDir>S:\SteamLibrary\steamapps\common\Schedule I</GameDir>
+        <ManagedDir>$(GameDir)\Schedule I_Data\Managed</ManagedDir>
+        <MelonDir>$(GameDir)\MelonLoader</MelonDir>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- MelonLoader -->
+        <Reference Include="MelonLoader">
+            <HintPath>$(MelonDir)\net35\MelonLoader.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+
+        <!-- Game code -->
+        <Reference Include="Assembly-CSharp">
+            <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+
+        <!-- FishNet networking -->
+        <Reference Include="FishNet.Runtime">
+            <HintPath>$(ManagedDir)\FishNet.Runtime.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+
+        <!-- Unity core -->
+        <Reference Include="UnityEngine">
+            <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.InputLegacyModule">
+            <HintPath>$(ManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.PhysicsModule">
+            <HintPath>$(ManagedDir)\UnityEngine.PhysicsModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.AIModule">
+            <HintPath>$(ManagedDir)\UnityEngine.AIModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.JSONSerializeModule">
+            <HintPath>$(ManagedDir)\UnityEngine.JSONSerializeModule.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+    </ItemGroup>
+
+    <!-- Auto-copy DLL to Mods folder after build -->
+    <Target Name="CopyToMods" AfterTargets="Build">
+        <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(GameDir)\Mods" />
+    </Target>
+
+</Project>
