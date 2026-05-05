@@ -72,7 +72,7 @@ namespace DeliveryDriversMod
                 }
                 else if (driver != null && driver.IsRunning)
                 {
-                    MelonLogger.Msg("[DeliveryDriversMod] Drive test already in progress");
+                    MelonLogger.Msg("Drive test already in progress");
                 }
             }
 
@@ -85,7 +85,7 @@ namespace DeliveryDriversMod
                 }
                 else if (driver != null && driver.IsRunning)
                 {
-                    MelonLogger.Msg("[DeliveryDriversMod] Test already in progress");
+                    MelonLogger.Msg("Test already in progress");
                 }
             }
         }
@@ -94,27 +94,27 @@ namespace DeliveryDriversMod
         {
             if (!InstanceFinder.IsServer)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot spawn vehicle: not server");
+                MelonLogger.Warning("Cannot spawn vehicle: not server");
                 return;
             }
 
             if (Player.Local == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot spawn vehicle: Player.Local is null");
+                MelonLogger.Warning("Cannot spawn vehicle: Player.Local is null");
                 return;
             }
 
             var vehicleManager = NetworkSingleton<VehicleManager>.Instance;
             if (vehicleManager == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] VehicleManager not available");
+                MelonLogger.Error("VehicleManager not available");
                 return;
             }
 
             List<LandVehicle> prefabs = vehicleManager.VehiclePrefabs;
             if (prefabs == null || prefabs.Count == 0)
             {
-                MelonLogger.Error("[DeliveryDriversMod] No vehicle prefabs registered");
+                MelonLogger.Error("No vehicle prefabs registered");
                 return;
             }
 
@@ -131,12 +131,12 @@ namespace DeliveryDriversMod
             LandVehicle spawned = vehicleManager.SpawnAndReturnVehicle(vehicleCode, pos, rot, true);
             if (spawned == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] SpawnAndReturnVehicle returned null for code '" + vehicleCode + "'");
+                MelonLogger.Error("SpawnAndReturnVehicle returned null for code '" + vehicleCode + "'");
                 return;
             }
 
             int countAfter = vehicleManager.PlayerOwnedVehicles.Count;
-            MelonLogger.Msg("[DeliveryDriversMod] Spawned vehicle '" + vehicleCode + "' at " + pos +
+            MelonLogger.Msg("Spawned vehicle '" + vehicleCode + "' at " + pos +
                 " (PlayerOwnedVehicles: " + countBefore + " → " + countAfter + ")");
 
             // Log all available vehicle codes on first spawn for reference
@@ -144,7 +144,7 @@ namespace DeliveryDriversMod
             {
                 var codes = new List<string>();
                 foreach (var p in prefabs) codes.Add(p.VehicleCode);
-                MelonLogger.Msg("[DeliveryDriversMod] Available vehicle codes: " + string.Join(", ", codes));
+                MelonLogger.Msg("Available vehicle codes: " + string.Join(", ", codes));
             }
         }
     }

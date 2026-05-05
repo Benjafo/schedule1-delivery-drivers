@@ -78,21 +78,25 @@ Each transition is logged via `MelonLogger.Msg`.
 ### State: WalkingToVehicle
 
 **Entry action:**
+
 ```csharp
 Vector3 walkTarget = vehicle.driverEntryPoint.position;  // exitPoints[0]
 npc.Movement.SetDestination(walkTarget);
 ```
 
 **Per-frame check (Update):**
+
 ```csharp
 float dist = Vector3.Distance(npc.transform.position, walkTarget);
 if (dist < 2.5f) → transition to EnteringVehicle
 ```
 
 **Timeout fallback:** If >15 seconds elapse without arriving, warp the NPC:
+
 ```csharp
 npc.Movement.Warp(walkTarget);
 ```
+
 Then transition to EnteringVehicle. This handles cases where SetDestination doesn't work on our uninitialized NPC or the NavMesh path is blocked.
 
 **Risk:** The NPC was spawned from BotanistPrefab without `Initialize()`. The `NPCMovement` component and `NavMeshAgent` are present from the prefab clone, but may not be fully configured. If `SetDestination` throws or does nothing, the timeout catches it.
@@ -100,6 +104,7 @@ Then transition to EnteringVehicle. This handles cases where SetDestination does
 ### State: EnteringVehicle
 
 **Entry action:**
+
 ```csharp
 npc.EnterVehicle(null, vehicle);
 ```
@@ -107,6 +112,7 @@ npc.EnterVehicle(null, vehicle);
 Calling convention: `null` for `NetworkConnection` → broadcasts to all observers (correct for server/host-side code).
 
 **What this does internally** (NPC.cs L1786):
+
 - Sets `CurrentVehicle = vehicle`
 - Hides NPC model (`SetVisible(false)`)
 - Disables NavMeshAgent
@@ -121,6 +127,7 @@ Calling convention: `null` for `NetworkConnection` → broadcasts to all observe
 **Entry action:**
 
 First, if the vehicle is parked, unpark it:
+
 ```csharp
 if (vehicle.isParked)
 {
@@ -130,6 +137,7 @@ if (vehicle.isParked)
 ```
 
 Then navigate:
+
 ```csharp
 vehicle.Agent.Navigate(
     destination.EntryPoint.position,
@@ -139,21 +147,22 @@ vehicle.Agent.Navigate(
 ```
 
 **Callback handler:**
+
 ```csharp
 private void OnNavigationComplete(VehicleAgent.ENavigationResult result)
 {
     switch (result)
     {
         case ENavigationResult.Complete:
-            MelonLogger.Msg("[DeliveryDriversMod] Navigation complete, parking...");
+            MelonLogger.Msg("Navigation complete, parking...");
             SetState(DriverState.Parking);
             break;
         case ENavigationResult.Failed:
-            MelonLogger.Error("[DeliveryDriversMod] Navigation FAILED");
+            MelonLogger.Error("Navigation FAILED");
             SetState(DriverState.Done);
             break;
         case ENavigationResult.Stopped:
-            MelonLogger.Warning("[DeliveryDriversMod] Navigation STOPPED");
+            MelonLogger.Warning("Navigation STOPPED");
             SetState(DriverState.Done);
             break;
     }
@@ -171,11 +180,12 @@ private void OnNavigationComplete(VehicleAgent.ENavigationResult result)
 ### State: Parking
 
 **Entry action:**
+
 ```csharp
 int spotIndex = destination.GetRandomFreeSpotIndex();
 if (spotIndex == -1)
 {
-    MelonLogger.Warning("[DeliveryDriversMod] No free parking spots, skipping park");
+    MelonLogger.Warning("No free parking spots, skipping park");
     SetState(DriverState.ExitingVehicle);
     return;
 }
@@ -195,11 +205,13 @@ vehicle.Park(null, new ParkData(destination.GUID, spotIndex, alignment), true);
 ### State: ExitingVehicle
 
 **Entry action:**
+
 ```csharp
 npc.ExitVehicle();
 ```
 
 **What this does internally** (NPC.cs L1886):
+
 - Removes NPC from vehicle occupants
 - Resets VehicleAgent flags
 - Reparents NPC to `NPCManager.Instance.NPCContainer`
@@ -212,8 +224,9 @@ npc.ExitVehicle();
 ### State: Done
 
 Log summary:
+
 ```
-[DeliveryDriversMod] Drive test complete: NPC exited vehicle at <position>
+Drive test complete: NPC exited vehicle at <position>
 ```
 
 Reset state so F10 can be pressed again for another test run.
@@ -269,6 +282,7 @@ namespace DeliveryDriversMod
 ### Modified: `Mod/Source/DeliveryDriversMod.cs`
 
 Changes:
+
 1. Add `DeliveryDriverBehaviour` component to the manager GameObject
 2. Add F10 hotkey handler in `OnUpdate()`
 3. F10 handler: validate prerequisites, find vehicle/NPC/destination, call `StartDriveTest()`
@@ -308,8 +322,8 @@ public GameObject GetLastSpawnedNPC()
 
 The new file needs these additional assembly references (beyond what hello-world already uses):
 
-| Assembly | Types Used |
-|----------|-----------|
+| Assembly              | Types Used                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Assembly-CSharp.dll` | `LandVehicle`, `VehicleAgent`, `VehicleManager`, `ParkingLot`, `ParkingSpot`, `ParkData`, `EParkingAlignment`, `ENavigationResult`, `NavigationSettings`, `NPC`, `NPCMovement` |
 
 These should all already be available from the existing `Assembly-CSharp.dll` reference. No new DLL references needed.
@@ -337,14 +351,14 @@ Note: `ParkData` and `EParkingAlignment` might be in `ScheduleOne.Vehicles` rath
 
 ## 6. Risks and Mitigations
 
-| Risk | Likelihood | Mitigation |
-|------|-----------|------------|
-| `NPCMovement.SetDestination` doesn't work on uninitialized NPC | Medium | 15-second timeout → warp fallback |
-| Vehicle is >6m from road graph | Low | Default `NavigationSettings` auto-teleports to graph |
-| `ParkingLot.EntryPoint` is unreachable on vehicle graph | Low | Expected to work (vanilla NPC vehicles use ParkingLots). If Navigate fails, callback handles it gracefully |
-| No ParkingLots with free spots | Very Low | Game world has many; we pick the best available |
-| `EnterVehicle` fails on uninitialized NPC | Low | NPC.EnterVehicle is a base class method that just does transform parenting + visibility — shouldn't depend on Initialize. If it throws, catch and log |
-| Navigation callback fires on a destroyed object | Low | Guard callback with null-checks on vehicle/npc references |
+| Risk                                                           | Likelihood | Mitigation                                                                                                                                            |
+| -------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NPCMovement.SetDestination` doesn't work on uninitialized NPC | Medium     | 15-second timeout → warp fallback                                                                                                                     |
+| Vehicle is >6m from road graph                                 | Low        | Default `NavigationSettings` auto-teleports to graph                                                                                                  |
+| `ParkingLot.EntryPoint` is unreachable on vehicle graph        | Low        | Expected to work (vanilla NPC vehicles use ParkingLots). If Navigate fails, callback handles it gracefully                                            |
+| No ParkingLots with free spots                                 | Very Low   | Game world has many; we pick the best available                                                                                                       |
+| `EnterVehicle` fails on uninitialized NPC                      | Low        | NPC.EnterVehicle is a base class method that just does transform parenting + visibility — shouldn't depend on Initialize. If it throws, catch and log |
+| Navigation callback fires on a destroyed object                | Low        | Guard callback with null-checks on vehicle/npc references                                                                                             |
 
 ---
 
@@ -353,23 +367,24 @@ Note: `ParkData` and `EParkingAlignment` might be in `ScheduleOne.Vehicles` rath
 Every state transition logs with the `[DeliveryDriversMod]` prefix:
 
 ```
-[DeliveryDriversMod] F10: Starting drive test
-[DeliveryDriversMod]   Vehicle: <vehicleName> at <pos> (distance: <d>m)
-[DeliveryDriversMod]   NPC: <guid>
-[DeliveryDriversMod]   Destination: ParkingLot at <pos> (distance: <d>m)
-[DeliveryDriversMod] State: Idle → WalkingToVehicle
-[DeliveryDriversMod] State: WalkingToVehicle → EnteringVehicle (walked <d>m in <t>s)
-[DeliveryDriversMod] State: EnteringVehicle → Driving
-[DeliveryDriversMod] State: Driving → Parking (navigation complete)
-[DeliveryDriversMod] State: Parking → ExitingVehicle (parked at spot <idx>)
-[DeliveryDriversMod] State: ExitingVehicle → Done
-[DeliveryDriversMod] Drive test complete: NPC exited at <pos>
+F10: Starting drive test
+  Vehicle: <vehicleName> at <pos> (distance: <d>m)
+  NPC: <guid>
+  Destination: ParkingLot at <pos> (distance: <d>m)
+State: Idle → WalkingToVehicle
+State: WalkingToVehicle → EnteringVehicle (walked <d>m in <t>s)
+State: EnteringVehicle → Driving
+State: Driving → Parking (navigation complete)
+State: Parking → ExitingVehicle (parked at spot <idx>)
+State: ExitingVehicle → Done
+Drive test complete: NPC exited at <pos>
 ```
 
 Or on failure:
+
 ```
-[DeliveryDriversMod] Navigation FAILED — aborting drive test
-[DeliveryDriversMod] State: Driving → Done (failed)
+Navigation FAILED — aborting drive test
+State: Driving → Done (failed)
 ```
 
 ---
@@ -377,6 +392,7 @@ Or on failure:
 ## 8. What This Does NOT Cover
 
 Per milestone scope:
+
 - No cargo / item transfer
 - No LoadingDock interaction
 - No multiple destinations or routes

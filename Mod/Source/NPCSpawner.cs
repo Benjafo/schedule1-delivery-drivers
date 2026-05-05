@@ -47,7 +47,7 @@ namespace DeliveryDriversMod
 
             if (saveManager == null || loadManager == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] SaveManager or LoadManager not ready, deferring registration");
+                MelonLogger.Warning("SaveManager or LoadManager not ready, deferring registration");
                 return;
             }
 
@@ -55,7 +55,7 @@ namespace DeliveryDriversMod
             loadManager.onLoadComplete.AddListener(OnGameLoaded);
             _registered = true;
 
-            MelonLogger.Msg("[DeliveryDriversMod] NPCSpawner registered with save/load events");
+            MelonLogger.Msg("NPCSpawner registered with save/load events");
         }
 
         /// <summary>
@@ -82,20 +82,20 @@ namespace DeliveryDriversMod
         {
             if (!InstanceFinder.IsServer)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot spawn NPC: not server");
+                MelonLogger.Warning("Cannot spawn NPC: not server");
                 return;
             }
 
             if (Player.Local == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot spawn NPC: Player.Local is null");
+                MelonLogger.Warning("Cannot spawn NPC: Player.Local is null");
                 return;
             }
 
             Employee prefab = NetworkSingleton<EmployeeManager>.Instance.BotanistPrefab;
             if (prefab == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] BotanistPrefab is null — cannot spawn");
+                MelonLogger.Error("BotanistPrefab is null — cannot spawn");
                 return;
             }
 
@@ -104,7 +104,7 @@ namespace DeliveryDriversMod
             string guid = Guid.NewGuid().ToString();
 
             SpawnNPCInternal(prefab, pos, rot, guid);
-            MelonLogger.Msg("[DeliveryDriversMod] Spawned test NPC at " + pos + ", GUID: " + guid);
+            MelonLogger.Msg("Spawned test NPC at " + pos + ", GUID: " + guid);
         }
 
         private void SpawnNPCInternal(Employee prefab, Vector3 pos, Quaternion rot, string guid)
@@ -141,11 +141,11 @@ namespace DeliveryDriversMod
 
                 Directory.CreateDirectory(Path.GetDirectoryName(filePath));
                 File.WriteAllText(filePath, json);
-                MelonLogger.Msg("[DeliveryDriversMod] Saved " + data.spawnedNPCs.Length + " NPC(s) to " + filePath);
+                MelonLogger.Msg("Saved " + data.spawnedNPCs.Length + " NPC(s) to " + filePath);
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Save failed: " + ex);
+                MelonLogger.Error("Save failed: " + ex);
             }
         }
 
@@ -166,14 +166,14 @@ namespace DeliveryDriversMod
 
                 if (!InstanceFinder.IsServer)
                 {
-                    MelonLogger.Warning("[DeliveryDriversMod] Cannot restore NPCs: not server");
+                    MelonLogger.Warning("Cannot restore NPCs: not server");
                     return;
                 }
 
                 Employee prefab = NetworkSingleton<EmployeeManager>.Instance.BotanistPrefab;
                 if (prefab == null)
                 {
-                    MelonLogger.Error("[DeliveryDriversMod] BotanistPrefab is null — cannot restore NPCs");
+                    MelonLogger.Error("BotanistPrefab is null — cannot restore NPCs");
                     return;
                 }
 
@@ -182,12 +182,12 @@ namespace DeliveryDriversMod
                     Vector3 pos = new Vector3(npcData.x, npcData.y, npcData.z);
                     Quaternion rot = Quaternion.Euler(0f, npcData.rotY, 0f);
                     SpawnNPCInternal(prefab, pos, rot, npcData.guid);
-                    MelonLogger.Msg("[DeliveryDriversMod] Restored NPC " + npcData.guid + " at " + pos);
+                    MelonLogger.Msg("Restored NPC " + npcData.guid + " at " + pos);
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Load failed: " + ex);
+                MelonLogger.Error("Load failed: " + ex);
             }
         }
 
@@ -210,7 +210,7 @@ namespace DeliveryDriversMod
             var loadManager = Singleton<LoadManager>.Instance;
             if (loadManager == null || string.IsNullOrEmpty(loadManager.LoadedGameFolderPath))
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No active save slot");
+                MelonLogger.Warning("No active save slot");
                 return null;
             }
 

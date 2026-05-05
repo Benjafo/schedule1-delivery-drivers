@@ -84,7 +84,7 @@ namespace DeliveryDriversMod
         {
             if (IsRunning)
             {
-                MelonLogger.Msg("[DeliveryDriversMod] Resetting stale driver state (" + _state + ")");
+                MelonLogger.Msg("Resetting stale driver state (" + _state + ")");
             }
             _npc = null;
             _vehicle = null;
@@ -102,19 +102,19 @@ namespace DeliveryDriversMod
         {
             if (IsRunning)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Drive test already in progress");
+                MelonLogger.Warning("Drive test already in progress");
                 return;
             }
 
             if (!InstanceFinder.IsServer)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot start drive test: not server");
+                MelonLogger.Warning("Cannot start drive test: not server");
                 return;
             }
 
             if (Player.Local == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot start drive test: Player.Local is null");
+                MelonLogger.Warning("Cannot start drive test: Player.Local is null");
                 return;
             }
 
@@ -122,7 +122,7 @@ namespace DeliveryDriversMod
             var vehicle = FindNearestPlayerVehicle();
             if (vehicle == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
+                MelonLogger.Warning("No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
                 return;
             }
 
@@ -130,13 +130,13 @@ namespace DeliveryDriversMod
             var npcObj = NPCSpawner.Instance?.GetLastSpawnedNPC();
             if (npcObj == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No spawned NPC available. Spawn one with F9 first");
+                MelonLogger.Warning("No spawned NPC available. Spawn one with F9 first");
                 return;
             }
             var npc = npcObj.GetComponent<NPC>();
             if (npc == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Spawned object has no NPC component");
+                MelonLogger.Error("Spawned object has no NPC component");
                 return;
             }
 
@@ -144,7 +144,7 @@ namespace DeliveryDriversMod
             var destination = FindDestinationParkingLot(vehicle.transform.position);
             if (destination == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] No suitable ParkingLot found");
+                MelonLogger.Error("No suitable ParkingLot found");
                 return;
             }
 
@@ -152,10 +152,10 @@ namespace DeliveryDriversMod
             var vehDist = Vector3.Distance(vehicle.transform.position, playerPos);
             var destDist = Vector3.Distance(destination.EntryPoint.position, vehicle.transform.position);
 
-            MelonLogger.Msg("[DeliveryDriversMod] F10: Starting drive test");
-            MelonLogger.Msg("[DeliveryDriversMod]   Vehicle: " + vehicle.name + " at " + vehicle.transform.position + " (distance: " + vehDist.ToString("F1") + "m)");
-            MelonLogger.Msg("[DeliveryDriversMod]   NPC: " + npcObj.name);
-            MelonLogger.Msg("[DeliveryDriversMod]   Destination: ParkingLot at " + destination.EntryPoint.position + " (distance: " + destDist.ToString("F1") + "m)");
+            MelonLogger.Msg("F10: Starting drive test");
+            MelonLogger.Msg("  Vehicle: " + vehicle.name + " at " + vehicle.transform.position + " (distance: " + vehDist.ToString("F1") + "m)");
+            MelonLogger.Msg("  NPC: " + npcObj.name);
+            MelonLogger.Msg("  Destination: ParkingLot at " + destination.EntryPoint.position + " (distance: " + destDist.ToString("F1") + "m)");
 
             _npc = npc;
             _vehicle = vehicle;
@@ -169,19 +169,19 @@ namespace DeliveryDriversMod
         {
             if (IsRunning)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Test already in progress");
+                MelonLogger.Warning("Test already in progress");
                 return;
             }
 
             if (!InstanceFinder.IsServer)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot start cargo test: not server");
+                MelonLogger.Warning("Cannot start cargo test: not server");
                 return;
             }
 
             if (Player.Local == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Cannot start cargo test: Player.Local is null");
+                MelonLogger.Warning("Cannot start cargo test: Player.Local is null");
                 return;
             }
 
@@ -189,13 +189,13 @@ namespace DeliveryDriversMod
             var vehicle = FindNearestPlayerVehicle();
             if (vehicle == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
+                MelonLogger.Warning("No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
                 return;
             }
 
             if (vehicle.Storage == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Vehicle has no Storage component");
+                MelonLogger.Error("Vehicle has no Storage component");
                 return;
             }
 
@@ -203,13 +203,13 @@ namespace DeliveryDriversMod
             var npcObj = NPCSpawner.Instance?.GetLastSpawnedNPC();
             if (npcObj == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No spawned NPC available. Spawn one with F9 first");
+                MelonLogger.Warning("No spawned NPC available. Spawn one with F9 first");
                 return;
             }
             var npc = npcObj.GetComponent<NPC>();
             if (npc == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Spawned object has no NPC component");
+                MelonLogger.Error("Spawned object has no NPC component");
                 return;
             }
 
@@ -232,11 +232,11 @@ namespace DeliveryDriversMod
             var srcDist = Vector3.Distance(srcLot.EntryPoint.position, vehicle.transform.position);
             var dstDist = Vector3.Distance(dstLot.EntryPoint.position, srcLot.EntryPoint.position);
 
-            MelonLogger.Msg("[DeliveryDriversMod] F11: Starting cargo transfer test");
-            MelonLogger.Msg("[DeliveryDriversMod]   Vehicle: " + vehicle.name + " at " + vehicle.transform.position + " (distance: " + vehDist.ToString("F1") + "m)");
-            MelonLogger.Msg("[DeliveryDriversMod]   NPC: " + npcObj.name);
-            MelonLogger.Msg("[DeliveryDriversMod]   Source: " + srcStorage.name + " at " + srcStorage.transform.position + ", ParkingLot " + srcDist.ToString("F1") + "m away");
-            MelonLogger.Msg("[DeliveryDriversMod]   Destination: " + dstStorage.name + " at " + dstStorage.transform.position + ", ParkingLot " + dstDist.ToString("F1") + "m from source lot");
+            MelonLogger.Msg("F11: Starting cargo transfer test");
+            MelonLogger.Msg("  Vehicle: " + vehicle.name + " at " + vehicle.transform.position + " (distance: " + vehDist.ToString("F1") + "m)");
+            MelonLogger.Msg("  NPC: " + npcObj.name);
+            MelonLogger.Msg("  Source: " + srcStorage.name + " at " + srcStorage.transform.position + ", ParkingLot " + srcDist.ToString("F1") + "m away");
+            MelonLogger.Msg("  Destination: " + dstStorage.name + " at " + dstStorage.transform.position + ", ParkingLot " + dstDist.ToString("F1") + "m from source lot");
 
             // Set references
             _npc = npc;
@@ -263,7 +263,7 @@ namespace DeliveryDriversMod
             _state = newState;
             _stateTimer = 0f;
 
-            MelonLogger.Msg("[DeliveryDriversMod] State: " + oldState + " → " + newState);
+            MelonLogger.Msg("State: " + oldState + " → " + newState);
 
             switch (newState)
             {
@@ -325,11 +325,11 @@ namespace DeliveryDriversMod
             try
             {
                 _npc.Movement.SetDestination(_walkTarget);
-                MelonLogger.Msg("[DeliveryDriversMod] NPC walking to vehicle at " + _walkTarget);
+                MelonLogger.Msg("NPC walking to vehicle at " + _walkTarget);
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] SetDestination failed (" + ex.Message + "), will warp on timeout");
+                MelonLogger.Warning("SetDestination failed (" + ex.Message + "), will warp on timeout");
             }
         }
 
@@ -337,7 +337,7 @@ namespace DeliveryDriversMod
         {
             if (_npc == null || _vehicle == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] NPC or vehicle destroyed during walk");
+                MelonLogger.Error("NPC or vehicle destroyed during walk");
                 SetState(DriverState.Done);
                 return;
             }
@@ -346,21 +346,21 @@ namespace DeliveryDriversMod
 
             if (dist < WALK_ARRIVE_DIST)
             {
-                MelonLogger.Msg("[DeliveryDriversMod] NPC arrived at vehicle (walked in " + _stateTimer.ToString("F1") + "s)");
+                MelonLogger.Msg("NPC arrived at vehicle (walked in " + _stateTimer.ToString("F1") + "s)");
                 SetState(DriverState.EnteringVehicle);
                 return;
             }
 
             if (_stateTimer > WALK_TIMEOUT)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Walk timeout (" + WALK_TIMEOUT + "s), warping NPC to vehicle");
+                MelonLogger.Warning("Walk timeout (" + WALK_TIMEOUT + "s), warping NPC to vehicle");
                 try
                 {
                     _npc.Movement.Warp(_walkTarget);
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Warning("[DeliveryDriversMod] Warp failed (" + ex.Message + "), teleporting directly");
+                    MelonLogger.Warning("Warp failed (" + ex.Message + "), teleporting directly");
                     _npc.transform.position = _walkTarget;
                 }
                 SetState(DriverState.EnteringVehicle);
@@ -376,11 +376,11 @@ namespace DeliveryDriversMod
             try
             {
                 _npc.EnterVehicle(null, _vehicle);
-                MelonLogger.Msg("[DeliveryDriversMod] NPC entering vehicle");
+                MelonLogger.Msg("NPC entering vehicle");
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] EnterVehicle failed: " + ex);
+                MelonLogger.Error("EnterVehicle failed: " + ex);
                 SetState(DriverState.Done);
             }
         }
@@ -407,14 +407,14 @@ namespace DeliveryDriversMod
                 // Unpark if needed
                 if (_vehicle.isParked)
                 {
-                    MelonLogger.Msg("[DeliveryDriversMod] Vehicle is parked, unparking first...");
+                    MelonLogger.Msg("Vehicle is parked, unparking first...");
                     bool useExitPoint = _vehicle.CurrentParkingLot != null && _vehicle.CurrentParkingLot.UseExitPoint;
                     _vehicle.ExitPark_Networked(null, useExitPoint);
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] ExitPark failed (" + ex.Message + "), continuing anyway");
+                MelonLogger.Warning("ExitPark failed (" + ex.Message + "), continuing anyway");
             }
         }
 
@@ -426,15 +426,15 @@ namespace DeliveryDriversMod
                 switch (_navigationResult)
                 {
                     case VehicleAgent.ENavigationResult.Complete:
-                        MelonLogger.Msg("[DeliveryDriversMod] Navigation complete, parking...");
+                        MelonLogger.Msg("Navigation complete, parking...");
                         SetState(DriverState.Parking);
                         break;
                     case VehicleAgent.ENavigationResult.Failed:
-                        MelonLogger.Error("[DeliveryDriversMod] Navigation FAILED — aborting");
+                        MelonLogger.Error("Navigation FAILED — aborting");
                         SetState(DriverState.Done);
                         break;
                     case VehicleAgent.ENavigationResult.Stopped:
-                        MelonLogger.Warning("[DeliveryDriversMod] Navigation STOPPED — aborting");
+                        MelonLogger.Warning("Navigation STOPPED — aborting");
                         SetState(DriverState.Done);
                         break;
                 }
@@ -444,7 +444,7 @@ namespace DeliveryDriversMod
             // Start navigation after a brief delay (allow unpark to settle)
             if (!_vehicle.Agent.AutoDriving && _stateTimer > UNPARK_DELAY)
             {
-                MelonLogger.Msg("[DeliveryDriversMod] Starting navigation to " + _destination.EntryPoint.position);
+                MelonLogger.Msg("Starting navigation to " + _destination.EntryPoint.position);
                 try
                 {
                     _vehicle.Agent.Navigate(
@@ -455,7 +455,7 @@ namespace DeliveryDriversMod
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Error("[DeliveryDriversMod] Navigate() threw: " + ex);
+                    MelonLogger.Error("Navigate() threw: " + ex);
                     SetState(DriverState.Done);
                 }
             }
@@ -479,7 +479,7 @@ namespace DeliveryDriversMod
                 int spotIndex = _destination.GetRandomFreeSpotIndex();
                 if (spotIndex == -1)
                 {
-                    MelonLogger.Warning("[DeliveryDriversMod] No free parking spots, skipping park");
+                    MelonLogger.Warning("No free parking spots, skipping park");
                     // Decide next state even without parking
                     TransitionAfterParking();
                     return;
@@ -489,13 +489,13 @@ namespace DeliveryDriversMod
                 var parkData = new ParkData(_destination.GUID, spotIndex, alignment);
 
                 _vehicle.Park(null, parkData, true);
-                MelonLogger.Msg("[DeliveryDriversMod] Vehicle parked at spot " + spotIndex);
+                MelonLogger.Msg("Vehicle parked at spot " + spotIndex);
 
                 TransitionAfterParking();
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Park failed: " + ex);
+                MelonLogger.Error("Park failed: " + ex);
                 TransitionAfterParking();
             }
         }
@@ -523,13 +523,13 @@ namespace DeliveryDriversMod
 
         private void EnterLoadingCargo()
         {
-            MelonLogger.Msg("[DeliveryDriversMod] Loading cargo from source storage...");
+            MelonLogger.Msg("Loading cargo from source storage...");
 
             int count = TransferItems(_sourceStorage, _vehicle.Storage, "LOAD");
 
             if (count == 0)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Source was empty — nothing to deliver");
+                MelonLogger.Warning("Source was empty — nothing to deliver");
             }
 
             // Switch to delivery leg
@@ -544,13 +544,13 @@ namespace DeliveryDriversMod
 
         private void EnterUnloadingCargo()
         {
-            MelonLogger.Msg("[DeliveryDriversMod] Unloading cargo to destination storage...");
+            MelonLogger.Msg("Unloading cargo to destination storage...");
 
             int count = TransferItems(_vehicle.Storage, _destStorage, "UNLOAD");
 
             if (count == 0)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] Vehicle was empty — nothing to unload");
+                MelonLogger.Warning("Vehicle was empty — nothing to unload");
             }
 
             SetState(DriverState.ExitingVehicle);
@@ -567,16 +567,16 @@ namespace DeliveryDriversMod
                 if (_npc != null && _npc.IsInVehicle)
                 {
                     _npc.ExitVehicle();
-                    MelonLogger.Msg("[DeliveryDriversMod] NPC exiting vehicle");
+                    MelonLogger.Msg("NPC exiting vehicle");
                 }
                 else
                 {
-                    MelonLogger.Warning("[DeliveryDriversMod] NPC not in vehicle, skipping exit");
+                    MelonLogger.Warning("NPC not in vehicle, skipping exit");
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] ExitVehicle failed: " + ex);
+                MelonLogger.Error("ExitVehicle failed: " + ex);
             }
 
             SetState(DriverState.Done);
@@ -592,11 +592,11 @@ namespace DeliveryDriversMod
 
             if (_sourceStorage != null)
             {
-                MelonLogger.Msg("[DeliveryDriversMod] Cargo test complete: NPC exited at " + exitPos);
+                MelonLogger.Msg("Cargo test complete: NPC exited at " + exitPos);
             }
             else
             {
-                MelonLogger.Msg("[DeliveryDriversMod] Drive test complete: NPC exited at " + exitPos);
+                MelonLogger.Msg("Drive test complete: NPC exited at " + exitPos);
             }
 
             // Clear all references
@@ -625,7 +625,7 @@ namespace DeliveryDriversMod
                 if (slot.ItemInstance != null)
                     occupiedSlots++;
             }
-            MelonLogger.Msg("[DeliveryDriversMod] " + label + ": source has " + occupiedSlots + " occupied slot(s)");
+            MelonLogger.Msg("" + label + ": source has " + occupiedSlots + " occupied slot(s)");
 
             // Transfer each occupied slot
             for (int i = 0; i < source.ItemSlots.Count; i++)
@@ -641,7 +641,7 @@ namespace DeliveryDriversMod
                 totalTransferred += qty;
             }
 
-            MelonLogger.Msg("[DeliveryDriversMod] " + label + ": transferred " + totalTransferred + " item(s)");
+            MelonLogger.Msg("" + label + ": transferred " + totalTransferred + " item(s)");
             return totalTransferred;
         }
 
@@ -652,7 +652,7 @@ namespace DeliveryDriversMod
                 ItemDefinition def = Registry.GetItem(TEST_ITEM_ID);
                 if (def == null)
                 {
-                    MelonLogger.Error("[DeliveryDriversMod] Registry.GetItem('" + TEST_ITEM_ID + "') returned null");
+                    MelonLogger.Error("Registry.GetItem('" + TEST_ITEM_ID + "') returned null");
                     return false;
                 }
 
@@ -662,12 +662,12 @@ namespace DeliveryDriversMod
                     source.InsertItem(instance, true);
                 }
 
-                MelonLogger.Msg("[DeliveryDriversMod] Populated source with " + TEST_ITEM_COUNT + " " + TEST_ITEM_ID);
+                MelonLogger.Msg("Populated source with " + TEST_ITEM_COUNT + " " + TEST_ITEM_ID);
                 return true;
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Failed to populate source storage: " + ex);
+                MelonLogger.Error("Failed to populate source storage: " + ex);
                 return false;
             }
         }
@@ -681,7 +681,7 @@ namespace DeliveryDriversMod
             var vehicleManager = NetworkSingleton<VehicleManager>.Instance;
             if (vehicleManager == null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] VehicleManager not available");
+                MelonLogger.Warning("VehicleManager not available");
                 return null;
             }
 
@@ -697,11 +697,11 @@ namespace DeliveryDriversMod
             var lots = FindObjectsOfType<ParkingLot>();
             if (lots == null || lots.Length == 0)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No ParkingLots found in world");
+                MelonLogger.Warning("No ParkingLots found in world");
                 return null;
             }
 
-            MelonLogger.Msg("[DeliveryDriversMod] Found " + lots.Length + " ParkingLot(s) in world");
+            MelonLogger.Msg("Found " + lots.Length + " ParkingLot(s) in world");
 
             // Prefer a lot >30m away with free spots
             var candidate = lots
@@ -720,7 +720,7 @@ namespace DeliveryDriversMod
 
             if (candidate != null)
             {
-                MelonLogger.Warning("[DeliveryDriversMod] No lot >30m away, using closest available at " +
+                MelonLogger.Warning("No lot >30m away, using closest available at " +
                     Vector3.Distance(candidate.EntryPoint.position, vehiclePos).ToString("F1") + "m");
             }
 
@@ -746,11 +746,11 @@ namespace DeliveryDriversMod
             dstLot = null;
 
             var allStorage = WorldStorageEntity.All;
-            MelonLogger.Msg("[DeliveryDriversMod] Found " + allStorage.Count + " WorldStorageEntity(s) in world");
+            MelonLogger.Msg("Found " + allStorage.Count + " WorldStorageEntity(s) in world");
 
             if (allStorage.Count == 0)
             {
-                MelonLogger.Error("[DeliveryDriversMod] No WorldStorageEntities found — cannot run cargo test. " +
+                MelonLogger.Error("No WorldStorageEntities found — cannot run cargo test. " +
                     "Player needs at least one property with storage.");
                 return false;
             }
@@ -775,11 +775,11 @@ namespace DeliveryDriversMod
 
             candidates.Sort((a, b) => a.lotDistance.CompareTo(b.lotDistance));
 
-            MelonLogger.Msg("[DeliveryDriversMod] " + candidates.Count + " storage(s) have a ParkingLot within " + STORAGE_LOT_SEARCH_RADIUS + "m");
+            MelonLogger.Msg("" + candidates.Count + " storage(s) have a ParkingLot within " + STORAGE_LOT_SEARCH_RADIUS + "m");
 
             if (candidates.Count < 2)
             {
-                MelonLogger.Error("[DeliveryDriversMod] Need at least 2 storage entities near ParkingLots, found " + candidates.Count);
+                MelonLogger.Error("Need at least 2 storage entities near ParkingLots, found " + candidates.Count);
                 return false;
             }
 
@@ -809,7 +809,7 @@ namespace DeliveryDriversMod
 
             if (dest == null)
             {
-                MelonLogger.Error("[DeliveryDriversMod] All storage candidates share the same ParkingLot — cannot run cargo test");
+                MelonLogger.Error("All storage candidates share the same ParkingLot — cannot run cargo test");
                 return false;
             }
 

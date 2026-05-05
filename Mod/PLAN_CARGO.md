@@ -38,20 +38,23 @@ var candidates = allStorage
 ```
 
 **Why this approach:**
+
 - `StorageEntity` is a `NetworkBehaviour` — cannot be reliably instantiated from scratch without a prefab
 - `WorldStorageEntity.All` is a static list populated automatically by `WorldStorageEntity.Awake()`
 - No UI needed — pure automated discovery
 - Works in any save game that has placed storage containers in the world
 
 **Abort conditions:**
+
 - `WorldStorageEntity.All` is empty → log error listing count, abort
 - Fewer than 2 candidates with ParkingLots within 50m → log error with diagnostics, abort
 
 **Diagnostic logging at F11 press:**
+
 ```
-[DeliveryDriversMod] Found N WorldStorageEntities in world
-[DeliveryDriversMod]   Source: <name> at <pos>, nearest ParkingLot at <dist>m
-[DeliveryDriversMod]   Destination: <name> at <pos>, nearest ParkingLot at <dist>m
+Found N WorldStorageEntities in world
+  Source: <name> at <pos>, nearest ParkingLot at <dist>m
+  Destination: <name> at <pos>, nearest ParkingLot at <dist>m
 ```
 
 ### Helper: `FindNearestParkingLot(Vector3 position)`
@@ -87,7 +90,7 @@ const int TEST_ITEM_COUNT = 5;
 ItemDefinition def = Registry.GetItem(TEST_ITEM_ID);
 if (def == null)
 {
-    MelonLogger.Error("[DeliveryDriversMod] Registry.GetItem('" + TEST_ITEM_ID + "') returned null");
+    MelonLogger.Error("Registry.GetItem('" + TEST_ITEM_ID + "') returned null");
     return;
 }
 
@@ -97,7 +100,7 @@ for (int i = 0; i < TEST_ITEM_COUNT; i++)
     _sourceStorage.InsertItem(instance, true);
 }
 
-MelonLogger.Msg("[DeliveryDriversMod] Populated source with " + TEST_ITEM_COUNT + " " + TEST_ITEM_ID);
+MelonLogger.Msg("Populated source with " + TEST_ITEM_COUNT + " " + TEST_ITEM_ID);
 ```
 
 **Why individual inserts:** Cash may not stack (it's currency, not a typical stackable item). Inserting 5 individual instances of quantity 1 is safer than 1 instance of quantity 5. If it does stack, InsertItem handles that automatically.
@@ -186,6 +189,7 @@ else
 ### Design decision: NPC stays in vehicle during load/unload
 
 **NPC does NOT exit the vehicle at the source.** Cargo transfer happens programmatically while the NPC remains in the driver seat. Rationale:
+
 - Avoids needing to re-run WalkingToVehicle + EnteringVehicle for the second leg
 - The transfer is "magical" for this milestone anyway (no animation)
 - Simpler state machine — `LoadingCargo` transitions directly to `Driving` for the next leg
@@ -212,7 +216,7 @@ private int TransferItems(StorageEntity source, StorageEntity destination, strin
         if (slot.ItemInstance != null)
             slotsBefore++;
     }
-    MelonLogger.Msg("[DeliveryDriversMod] " + label + ": source has " + slotsBefore + " occupied slots");
+    MelonLogger.Msg("" + label + ": source has " + slotsBefore + " occupied slots");
 
     // Transfer each occupied slot
     foreach (var slot in source.ItemSlots)
@@ -227,7 +231,7 @@ private int TransferItems(StorageEntity source, StorageEntity destination, strin
         totalTransferred += qty;
     }
 
-    MelonLogger.Msg("[DeliveryDriversMod] " + label + ": transferred " + totalTransferred + " items");
+    MelonLogger.Msg("" + label + ": transferred " + totalTransferred + " items");
     return totalTransferred;
 }
 ```
@@ -237,12 +241,12 @@ private int TransferItems(StorageEntity source, StorageEntity destination, strin
 ```csharp
 private void EnterLoadingCargo()
 {
-    MelonLogger.Msg("[DeliveryDriversMod] Loading cargo from source storage...");
+    MelonLogger.Msg("Loading cargo from source storage...");
     int count = TransferItems(_sourceStorage, _vehicle.Storage, "LOAD");
 
     if (count == 0)
     {
-        MelonLogger.Warning("[DeliveryDriversMod] Source was empty — nothing to deliver");
+        MelonLogger.Warning("Source was empty — nothing to deliver");
         // Still continue the full flow to test driving
     }
 
@@ -258,12 +262,12 @@ private void EnterLoadingCargo()
 ```csharp
 private void EnterUnloadingCargo()
 {
-    MelonLogger.Msg("[DeliveryDriversMod] Unloading cargo to destination storage...");
+    MelonLogger.Msg("Unloading cargo to destination storage...");
     int count = TransferItems(_vehicle.Storage, _destStorage, "UNLOAD");
 
     if (count == 0)
     {
-        MelonLogger.Warning("[DeliveryDriversMod] Vehicle was empty — nothing to unload");
+        MelonLogger.Warning("Vehicle was empty — nothing to unload");
     }
 
     SetState(DriverState.ExitingVehicle);
@@ -273,6 +277,7 @@ private void EnterUnloadingCargo()
 ### API Pattern (from RECON.md §4)
 
 The transfer follows the documented pattern:
+
 ```csharp
 ItemInstance item = sourceStorage.ItemSlots[i].ItemInstance.GetCopy();
 int qty = sourceStorage.ItemSlots[i].Quantity;
@@ -284,16 +289,16 @@ destStorage.InsertItem(item, true);  // network=true for multiplayer sync
 
 ## 5. Edge Cases (Log, Don't Handle)
 
-| Edge Case | Behavior |
-|-----------|----------|
-| Source storage is empty | Log warning "Source was empty — nothing to deliver". Continue flow (still test the driving). |
-| Vehicle storage is full when loading | `InsertItem()` may silently fail if no slots available. Log vehicle slot count before/after load. No overflow handling. |
-| Destination storage is full when unloading | Same as above — `InsertItem()` may fail. Log before/after counts. |
-| No WorldStorageEntities in world | Log error with count, abort before starting state machine. |
-| No ParkingLots near storage entities | Log error with diagnostics (how many storages found, none had nearby lots), abort. |
-| Vehicle destroyed mid-flow | Existing null guard in `UpdateWalkingToVehicle` catches this. Similar guards in other states. |
-| NPC destroyed mid-flow | Same existing null guard. |
-| Navigation fails on either leg | Existing callback handler → `SetState(Done)`. |
+| Edge Case                                  | Behavior                                                                                                                |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Source storage is empty                    | Log warning "Source was empty — nothing to deliver". Continue flow (still test the driving).                            |
+| Vehicle storage is full when loading       | `InsertItem()` may silently fail if no slots available. Log vehicle slot count before/after load. No overflow handling. |
+| Destination storage is full when unloading | Same as above — `InsertItem()` may fail. Log before/after counts.                                                       |
+| No WorldStorageEntities in world           | Log error with count, abort before starting state machine.                                                              |
+| No ParkingLots near storage entities       | Log error with diagnostics (how many storages found, none had nearby lots), abort.                                      |
+| Vehicle destroyed mid-flow                 | Existing null guard in `UpdateWalkingToVehicle` catches this. Similar guards in other states.                           |
+| NPC destroyed mid-flow                     | Same existing null guard.                                                                                               |
+| Navigation fails on either leg             | Existing callback handler → `SetState(Done)`.                                                                           |
 
 ---
 
@@ -364,10 +369,10 @@ Verify `Registry` namespace during implementation — may be in a different name
 
 ## 9. Files Modified
 
-| File | Changes |
-|------|---------|
+| File                                    | Changes                                                                                                                                                                                                                        |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Mod/Source/DeliveryDriverBehaviour.cs` | Add LoadingCargo + UnloadingCargo states, DeliveryLeg enum, cargo fields, TriggerCargoTest(), TransferItems(), FindNearestParkingLotTo(), item population logic. Modify EnterParking() transition. Extend EnterDone() cleanup. |
-| `Mod/Source/DeliveryDriversMod.cs` | Add F11 hotkey handler (3 lines). |
+| `Mod/Source/DeliveryDriversMod.cs`      | Add F11 hotkey handler (3 lines).                                                                                                                                                                                              |
 
 No new files. No changes to `NPCSpawner.cs` or `SpawnedNPCData.cs`.
 
@@ -376,45 +381,45 @@ No new files. No changes to `NPCSpawner.cs` or `SpawnedNPCData.cs`.
 ## 10. Logging Plan
 
 ```
-[DeliveryDriversMod] F11: Starting cargo transfer test
-[DeliveryDriversMod]   Found N WorldStorageEntities in world
-[DeliveryDriversMod]   Source: <name> at <pos>, ParkingLot <dist>m away
-[DeliveryDriversMod]   Destination: <name> at <pos>, ParkingLot <dist>m away
-[DeliveryDriversMod]   Vehicle: <name> at <pos>
-[DeliveryDriversMod]   NPC: <name>
-[DeliveryDriversMod]   Populated source with 5 cash
-[DeliveryDriversMod] State: Idle → WalkingToVehicle
-[DeliveryDriversMod] State: WalkingToVehicle → EnteringVehicle
-[DeliveryDriversMod] State: EnteringVehicle → Driving
-[DeliveryDriversMod]   Starting navigation to source ParkingLot at <pos>
-[DeliveryDriversMod] State: Driving → Parking (source)
-[DeliveryDriversMod] State: Parking → LoadingCargo
-[DeliveryDriversMod] LOAD: source has N occupied slots
-[DeliveryDriversMod] LOAD: transferred N items
-[DeliveryDriversMod] State: LoadingCargo → Driving
-[DeliveryDriversMod]   Starting navigation to destination ParkingLot at <pos>
-[DeliveryDriversMod] State: Driving → Parking (destination)
-[DeliveryDriversMod] State: Parking → UnloadingCargo
-[DeliveryDriversMod] UNLOAD: source has N occupied slots
-[DeliveryDriversMod] UNLOAD: transferred N items
-[DeliveryDriversMod] State: UnloadingCargo → ExitingVehicle
-[DeliveryDriversMod] State: ExitingVehicle → Done
-[DeliveryDriversMod] Cargo test complete: delivered N items
+F11: Starting cargo transfer test
+  Found N WorldStorageEntities in world
+  Source: <name> at <pos>, ParkingLot <dist>m away
+  Destination: <name> at <pos>, ParkingLot <dist>m away
+  Vehicle: <name> at <pos>
+  NPC: <name>
+  Populated source with 5 cash
+State: Idle → WalkingToVehicle
+State: WalkingToVehicle → EnteringVehicle
+State: EnteringVehicle → Driving
+  Starting navigation to source ParkingLot at <pos>
+State: Driving → Parking (source)
+State: Parking → LoadingCargo
+LOAD: source has N occupied slots
+LOAD: transferred N items
+State: LoadingCargo → Driving
+  Starting navigation to destination ParkingLot at <pos>
+State: Driving → Parking (destination)
+State: Parking → UnloadingCargo
+UNLOAD: source has N occupied slots
+UNLOAD: transferred N items
+State: UnloadingCargo → ExitingVehicle
+State: ExitingVehicle → Done
+Cargo test complete: delivered N items
 ```
 
 ---
 
 ## 11. Risks
 
-| Risk | Likelihood | Mitigation |
-|------|-----------|------------|
-| `WorldStorageEntity.All` is empty in a new save | Medium | Log diagnostic, abort cleanly. Player needs at least one property with storage. |
-| No ParkingLot within 50m of any storage entity | Low | The game places ParkingLots near properties which also have storage. If this fails, increase search radius to 100m. |
-| `Registry.GetItem("cash")` returns null | Low | "cash" is used in core game code. Guard with null check + clear error. |
-| Vehicle storage is null | Low | Guard: `if (_vehicle.Storage == null)` → abort. Vehicle prefabs include StorageEntity. |
-| `InsertItem()` silently fails (full storage) | Medium | Log slot counts before/after. Don't handle overflow — just log discrepancy. |
-| Registry namespace is different than expected | Medium | Grep for `class Registry` during implementation. |
-| Second navigation (source → dest) fails | Medium | Same callback handler as M2 — logs and aborts cleanly. |
+| Risk                                            | Likelihood | Mitigation                                                                                                          |
+| ----------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------- |
+| `WorldStorageEntity.All` is empty in a new save | Medium     | Log diagnostic, abort cleanly. Player needs at least one property with storage.                                     |
+| No ParkingLot within 50m of any storage entity  | Low        | The game places ParkingLots near properties which also have storage. If this fails, increase search radius to 100m. |
+| `Registry.GetItem("cash")` returns null         | Low        | "cash" is used in core game code. Guard with null check + clear error.                                              |
+| Vehicle storage is null                         | Low        | Guard: `if (_vehicle.Storage == null)` → abort. Vehicle prefabs include StorageEntity.                              |
+| `InsertItem()` silently fails (full storage)    | Medium     | Log slot counts before/after. Don't handle overflow — just log discrepancy.                                         |
+| Registry namespace is different than expected   | Medium     | Grep for `class Registry` during implementation.                                                                    |
+| Second navigation (source → dest) fails         | Medium     | Same callback handler as M2 — logs and aborts cleanly.                                                              |
 
 ---
 
@@ -440,6 +445,7 @@ No new files. No changes to `NPCSpawner.cs` or `SpawnedNPCData.cs`.
 ## 13. What This Does NOT Cover
 
 Per scope rules:
+
 - No LoadingDock integration (M4)
 - No save/load of cargo or route state (M6)
 - No schedule-based triggering (M7)
