@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net472</TargetFramework>
+        <OutputType>Library</OutputType>
+    </PropertyGroup>
+    <ItemGroup>
+        <Reference Include="MelonLoader">
+            <HintPath>S:/SteamLibrary/steamapps/common/Schedule I/MelonLoader/net35/MelonLoader.dll</HintPath>
+        </Reference>
+        <Reference Include="Assembly-CSharp">
+            <HintPath>S:/SteamLibrary/steamapps/common/Schedule I/Schedule I_Data/Managed/Assembly-CSharp.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>S:/SteamLibrary/steamapps/common/Schedule I/Schedule I_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
+        </Reference>
+        <Reference Include="UnityEngine.InputLegacyModule">
+            <HintPath>S:/SteamLibrary/steamapps/common/Schedule I/Schedule I_Data/Managed/UnityEngine.InputLegacyModule.dll</HintPath>
+        </Reference>
+    </ItemGroup>
+</Project>
