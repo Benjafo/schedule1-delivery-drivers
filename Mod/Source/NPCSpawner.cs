@@ -8,6 +8,7 @@ using ScheduleOne.DevUtilities;
 using ScheduleOne.Employees;
 using ScheduleOne.Persistence;
 using ScheduleOne.PlayerScripts;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace DeliveryDriversMod
@@ -134,7 +135,7 @@ namespace DeliveryDriversMod
                         rotY = r.npcObject.transform.eulerAngles.y
                     }).ToArray();
 
-                string json = JsonUtility.ToJson(data, true);
+                string json = JsonConvert.SerializeObject(data, Formatting.Indented);
                 string filePath = GetSaveFilePath();
                 if (filePath == null) return;
 
@@ -160,7 +161,7 @@ namespace DeliveryDriversMod
                 if (filePath == null || !File.Exists(filePath)) return;
 
                 string json = File.ReadAllText(filePath);
-                var data = JsonUtility.FromJson<DeliveryDriverModSaveData>(json);
+                var data = JsonConvert.DeserializeObject<DeliveryDriverModSaveData>(json);
                 if (data == null || data.spawnedNPCs == null || data.spawnedNPCs.Length == 0) return;
 
                 if (!InstanceFinder.IsServer)

@@ -644,14 +644,17 @@ For our mod, we could either:
 ### High Risk
 
 1. **FishNet Networking Compatibility.** Every major game class extends `NetworkBehaviour` and uses `[ServerRpc]`/`[ObserversRpc]` attributes. Our mod-spawned objects won't have proper network registration. In singleplayer this may be fine (host == client), but in multiplayer we'd need to ensure our NPC/vehicle manipulation goes through the correct RPC channels. **Mitigation:** Start singleplayer-only; wrap all mutations in `if (InstanceFinder.IsServer)` checks.
+**Status (validated milestone 1):** `InstanceFinder.ServerManager.Spawn(gameObject)` confirmed as the correct FishNet spawn entry point from MelonLoader in singleplayer/host context. Mod-spawned NetworkBehaviours register and persist correctly.
 
 2. **Vehicle Road Graph Availability.** `VehicleAgent.Navigate()` requires the vehicle to be within 6f of the vehicle road graph. If loading docks are off the road graph, navigation will fail or teleport the vehicle. **Mitigation:** Check `GetDistanceFromVehicleGraph()` before navigating; use `NavigationSettings.ensureProximityToGraph = true`.
 
 3. **NPC Spawning Without Prefab.** The `EmployeeManager` uses specific prefabs per `EEmployeeType`. We can't add a new enum value cleanly. **Mitigation:** Either clone an existing employee prefab at runtime and modify it, or spawn a generic NPC prefab and manage the driver logic externally (not as a true Employee subclass).
+**Status (validated milestone 1):** Cloning Employee prefabs (BotanistPrefab) and spawning via `InstanceFinder.ServerManager.Spawn()` without calling `Initialize()` works — Awake/Start handle null Property gracefully. No crash, NPC renders and persists.
 
 ### Medium Risk
 
 4. **Save System Hook Timing.** If our Harmony postfix on `SaveManager.Save()` runs at the wrong time in the save pipeline, we might write incomplete data or miss the save entirely. **Mitigation:** Use `ISaveable` interface properly and call `RegisterSaveable()` if possible from MelonLoader, or use a file watcher approach.
+**Status (validated milestone 1):** `Singleton<SaveManager>.Instance.RegisterSaveable(this)` works from a mod-created MonoBehaviour. `SaveManager.onSaveStart` and `LoadManager.onLoadComplete` UnityEvents fire reliably — no Harmony patches needed for save/load timing.
 
 5. **Game Update Fragility.** The decompiled code has no obfuscation (class/method names are clear), which is good. However, any game update could rename methods, change signatures, or restructure class hierarchies. Vehicle AI (VehicleAgent) is the most complex and likely to change. **Mitigation:** Keep Harmony patches minimal (we need very few); prefer public API calls over patches.
 
@@ -666,6 +669,19 @@ For our mod, we could either:
 9. **Vehicle Storage Slot Limits.** `StorageEntity.MAX_SLOTS = 20`. If cargo exceeds slot capacity, items will be lost. **Mitigation:** Check `HowManyCanFit()` before loading; split large shipments.
 
 10. **NavMesh/Vehicle Graph Mismatch.** NPCs walk on NavMesh; vehicles drive on the vehicle road graph. The transition point (NPC walks to parked vehicle) needs both systems to connect at the vehicle's position. If a vehicle is parked somewhere the NavMesh can't reach, the NPC can't get to it. **Mitigation:** Park vehicles at known accessible locations (existing ParkingLots have both graph connections).
+
+---
+
+## Validated Assumptions
+
+> Confirmed empirically via the hello-world milestone (working in-game). Future sessions can treat these as ground truth.
+
+- **Cloning Employee prefabs without Initialize() is safe.** Cloning BotanistPrefab and spawning without calling `Initialize()` does not crash — `Awake()`/`Start()` handle null `Property` gracefully.
+- **`InstanceFinder.ServerManager.Spawn(gameObject)` is the correct FishNet spawn path.** This is the right entry point for spawning mod-created NetworkBehaviours from a MelonLoader mod in singleplayer/host context.
+- **`RegisterSaveable()` works from mod-created MonoBehaviours.** Calling `Singleton<SaveManager>.Instance.RegisterSaveable(this)` during `OnSceneWasLoaded("Main")` successfully registers custom saveables into the game's save pipeline.
+- **`SaveManager.onSaveStart` and `LoadManager.onLoadComplete` are sufficient for save/load timing.** These UnityEvents fire reliably; we do not need to implement the `Loader.Load()` pipeline or use Harmony patches for persistence.
+- **Writing save data outside the game's managed save folder is stable.** Storing mod data under `Application.persistentDataPath/<modname>/<slotId>.json` bypasses the game's save-folder cleanup and survives reloads without corruption.
+- **Re-registration on scene reload works via `OnSceneWasLoaded`.** After quit-to-menu, `DontDestroyOnLoad` GameObjects survive but `SaveManager.Saveables` gets cleared — re-hooking `OnSceneWasLoaded("Main")` and re-registering handles this correctly.
 
 ---
 

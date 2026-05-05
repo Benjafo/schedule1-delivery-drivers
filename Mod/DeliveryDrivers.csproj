@@ -59,6 +59,12 @@
             <HintPath>$(ManagedDir)\UnityEngine.JSONSerializeModule.dll</HintPath>
             <Private>false</Private>
         </Reference>
+
+        <!-- JSON serialization (JsonUtility can't serialize types from runtime-loaded assemblies) -->
+        <Reference Include="Newtonsoft.Json">
+            <HintPath>$(MelonDir)\net35\Newtonsoft.Json.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
     </ItemGroup>
 
     <!-- Auto-copy DLL to Mods folder after build -->
