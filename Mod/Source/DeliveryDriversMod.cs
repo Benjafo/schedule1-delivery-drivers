@@ -24,8 +24,9 @@ namespace DeliveryDriversMod
                 var go = new GameObject("DeliveryDriverMod_Manager");
                 Object.DontDestroyOnLoad(go);
                 go.AddComponent<NPCSpawner>();
+                go.AddComponent<DeliveryDriverBehaviour>();
                 _managerCreated = true;
-                LoggerInstance.Msg("NPCSpawner manager created");
+                LoggerInstance.Msg("Manager created (NPCSpawner + DeliveryDriverBehaviour)");
             }
             else if (NPCSpawner.Instance != null)
             {
@@ -43,6 +44,19 @@ namespace DeliveryDriversMod
             if (Input.GetKeyDown(KeyCode.F9))
             {
                 NPCSpawner.Instance.SpawnTestNPC();
+            }
+
+            if (Input.GetKeyDown(KeyCode.F10))
+            {
+                var driver = DeliveryDriverBehaviour.Instance;
+                if (driver != null && !driver.IsRunning)
+                {
+                    driver.TriggerDriveTest();
+                }
+                else if (driver != null && driver.IsRunning)
+                {
+                    MelonLogger.Msg("[DeliveryDriversMod] Drive test already in progress");
+                }
             }
         }
     }

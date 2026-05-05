@@ -193,6 +193,16 @@ namespace DeliveryDriversMod
 
         #endregion
 
+        #region Public Accessors
+
+        public GameObject GetLastSpawnedNPC()
+        {
+            var last = spawnedNPCs.LastOrDefault(r => r.npcObject != null);
+            return last?.npcObject;
+        }
+
+        #endregion
+
         #region Helpers
 
         private string GetSaveFilePath()
