@@ -57,6 +57,19 @@ namespace DeliveryDriversMod
         {
             if (NPCSpawner.Instance == null) return;
 
+            if (Input.GetKeyDown(KeyCode.F6))
+            {
+                var driver = DeliveryDriverBehaviour.Instance;
+                if (driver != null && !driver.IsRunning)
+                {
+                    driver.TriggerRouteTest();
+                }
+                else if (driver != null && driver.IsRunning)
+                {
+                    MelonLogger.Msg("Test already in progress");
+                }
+            }
+
             if (Input.GetKeyDown(KeyCode.F7))
             {
                 GrantPropertyOwnership();
@@ -131,24 +144,15 @@ namespace DeliveryDriversMod
                 .Count(p => p != null && p.LoadingDocks != null && p.LoadingDocks.Length > 0
                     && p.LoadingDocks.Any(d => d != null && d.Parking != null));
 
-            int needed = Math.Max(0, 2 - ownedWithDocks);
-
-            if (needed == 0)
+            if (candidates.Count == 0)
             {
-                MelonLogger.Msg("F7: Already own " + ownedWithDocks +
+                MelonLogger.Msg("F7: Already own all " + ownedWithDocks +
                     " properties with loading docks — no grant needed");
                 return;
             }
 
-            if (candidates.Count < needed)
-            {
-                MelonLogger.Warning("F7: Need " + needed +
-                    " more properties with docks, but only " + candidates.Count +
-                    " unowned candidates exist");
-            }
-
             int granted = 0;
-            foreach (var prop in candidates.Take(needed))
+            foreach (var prop in candidates)
             {
                 MelonLogger.Msg("F7: Granting ownership of '" + prop.PropertyName +
                     "' (code: " + prop.PropertyCode + ", docks: " + prop.LoadingDockCount + ")");

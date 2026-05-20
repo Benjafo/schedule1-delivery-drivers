@@ -55,6 +55,10 @@ namespace DeliveryDriversMod
         private LoadingDock _sourceDock;
         private LoadingDock _destDock;
 
+        // Route fields (null when running F10/F11/F12 tests)
+        private RouteAssignment _routeAssignment;
+        private float _routeStartTime;
+
         // State
         private DriverState _state = DriverState.Idle;
         private float _stateTimer;
@@ -103,6 +107,7 @@ namespace DeliveryDriversMod
             _destParkingLot = null;
             _sourceDock = null;
             _destDock = null;
+            _routeAssignment = null;
             _state = DriverState.Idle;
         }
 
@@ -352,6 +357,152 @@ namespace DeliveryDriversMod
             // First leg: drive to source dock
             _destination = _sourceParkingLot;
             _currentLeg = DeliveryLeg.Pickup;
+
+            SetState(DriverState.WalkingToVehicle);
+        }
+
+        public void TriggerRouteTest()
+        {
+            if (IsRunning)
+            {
+                MelonLogger.Warning("Test already in progress");
+                return;
+            }
+
+            if (!InstanceFinder.IsServer)
+            {
+                MelonLogger.Warning("Cannot start route test: not server");
+                return;
+            }
+
+            if (Player.Local == null)
+            {
+                MelonLogger.Warning("Cannot start route test: Player.Local is null");
+                return;
+            }
+
+            // Find vehicle
+            var vehicle = FindNearestPlayerVehicle();
+            if (vehicle == null)
+            {
+                MelonLogger.Warning("No player-owned vehicle within " + VEHICLE_SEARCH_RADIUS + "m");
+                return;
+            }
+
+            if (vehicle.Storage == null)
+            {
+                MelonLogger.Error("Vehicle has no Storage component");
+                return;
+            }
+
+            // Find NPC
+            var npcObj = NPCSpawner.Instance?.GetLastSpawnedNPC();
+            if (npcObj == null)
+            {
+                MelonLogger.Warning("No spawned NPC available. Spawn one with F9 first");
+                return;
+            }
+            var npc = npcObj.GetComponent<NPC>();
+            if (npc == null)
+            {
+                MelonLogger.Error("Spawned object has no NPC component");
+                return;
+            }
+
+            // Find all available docks
+            var docks = FindAllAvailableDocks();
+            MelonLogger.Msg("F6: Found " + docks.Count + " available docks across " +
+                Property.OwnedProperties.Count + " owned properties");
+
+            if (docks.Count < 3)
+            {
+                MelonLogger.Error("Need at least 3 LoadingDocks for route test. Found " + docks.Count +
+                    ". Press F7 to grant ownership of properties with docks.");
+                return;
+            }
+
+            // Log available docks
+            for (int i = 0; i < docks.Count; i++)
+            {
+                MelonLogger.Msg("  Dock " + (i + 1) + ": " + docks[i].Name +
+                    " (" + docks[i].ParentProperty.PropertyName + ")");
+            }
+
+            // Pick docks for 4-stop route:
+            // Stop 1 (Pickup) & Stop 4 (Dropoff): dockA (closest to vehicle)
+            // Stop 2 (Dropoff): dockB (different property preferred)
+            // Stop 3 (Pickup): dockC (different from A and B)
+            var vehiclePos = vehicle.transform.position;
+            docks.Sort((a, b) =>
+                Vector3.Distance(a.Parking.EntryPoint.position, vehiclePos)
+                    .CompareTo(Vector3.Distance(b.Parking.EntryPoint.position, vehiclePos)));
+
+            var dockA = docks[0];
+            LoadingDock dockB = null;
+            LoadingDock dockC = null;
+
+            // dockB: prefer different property from A
+            foreach (var d in docks)
+            {
+                if (d == dockA) continue;
+                if (d.ParentProperty != dockA.ParentProperty)
+                {
+                    dockB = d;
+                    break;
+                }
+            }
+            // Fallback: any dock != A
+            if (dockB == null)
+                dockB = docks.First(d => d != dockA);
+
+            // dockC: different from both A and B
+            foreach (var d in docks)
+            {
+                if (d == dockA || d == dockB) continue;
+                dockC = d;
+                break;
+            }
+            if (dockC == null)
+            {
+                MelonLogger.Error("Cannot find 3 distinct docks for route test");
+                return;
+            }
+
+            // Build route
+            var route = new Route("Test Round-Trip");
+            route.Stops.Add(new RouteStop(dockA.GUID.ToString(), StopAction.Pickup));
+            route.Stops.Add(new RouteStop(dockB.GUID.ToString(), StopAction.Dropoff));
+            route.Stops.Add(new RouteStop(dockC.GUID.ToString(), StopAction.Pickup));
+            route.Stops.Add(new RouteStop(dockA.GUID.ToString(), StopAction.Dropoff));
+
+            // Resolve all stops
+            var assignment = new RouteAssignment(route);
+            if (!ResolveRouteStops(assignment)) return;
+
+            // Pre-populate pickup sources with distinct items
+            MelonLogger.Msg("F6: Pre-populating pickup docks...");
+            PopulateDockStorage(dockA, "cash", 5);
+            PopulateDockStorage(dockC, "baggie", 5);
+
+            // Log route summary
+            var playerPos = Player.Local.transform.position;
+            var vehDist = Vector3.Distance(vehicle.transform.position, playerPos);
+
+            MelonLogger.Msg("F6: Starting route test '" + route.Name + "'");
+            MelonLogger.Msg("  Vehicle: " + vehicle.name + " (distance: " + vehDist.ToString("F1") + "m)");
+            MelonLogger.Msg("  NPC: " + npcObj.name);
+            MelonLogger.Msg("  Route: " + route.Stops.Count + " stops");
+            MelonLogger.Msg("    Stop 1: Pickup at " + dockA.Name + " (" + dockA.ParentProperty.PropertyName + ")");
+            MelonLogger.Msg("    Stop 2: Dropoff at " + dockB.Name + " (" + dockB.ParentProperty.PropertyName + ")");
+            MelonLogger.Msg("    Stop 3: Pickup at " + dockC.Name + " (" + dockC.ParentProperty.PropertyName + ")");
+            MelonLogger.Msg("    Stop 4: Dropoff at " + dockA.Name + " (" + dockA.ParentProperty.PropertyName + ") [back to origin]");
+
+            // Set references and start
+            _npc = npc;
+            _vehicle = vehicle;
+            _routeAssignment = assignment;
+            _routeStartTime = Time.time;
+            _destination = assignment.CurrentStop.ResolvedParking;
 
             SetState(DriverState.WalkingToVehicle);
         }
@@ -611,7 +762,12 @@ namespace DeliveryDriversMod
 
         private void TransitionAfterParking()
         {
-            if (_sourceDock != null)
+            if (_routeAssignment != null)
+            {
+                // Route mode: always occupy dock first
+                SetState(DriverState.OccupyingDock);
+            }
+            else if (_sourceDock != null)
             {
                 // Dock test (F12) — occupy dock before cargo
                 SetState(DriverState.OccupyingDock);
@@ -637,10 +793,46 @@ namespace DeliveryDriversMod
 
         private void EnterLoadingCargo()
         {
-            if (_sourceDock != null)
+            if (_routeAssignment != null)
+            {
+                // Route mode: transfer items from nearby storage into vehicle
+                var stop = _routeAssignment.CurrentStop;
+                var dock = stop.ResolvedDock;
+                int stopNum = _routeAssignment.CurrentStopIndex + 1;
+                int stopTotal = _routeAssignment.Route.Stops.Count;
+
+                MelonLogger.Msg("ROUTE PICKUP: Stop " + stopNum + "/" + stopTotal +
+                    " at " + dock.Name + " (" + dock.ParentProperty.PropertyName + ")");
+                MelonLogger.Msg("  Vehicle slots occupied: " + CountOccupiedSlots(_vehicle.Storage) +
+                    "/" + _vehicle.Storage.ItemSlots.Count);
+
+                // Check capacity
+                if (CountOccupiedSlots(_vehicle.Storage) >= _vehicle.Storage.ItemSlots.Count)
+                {
+                    MelonLogger.Warning("ROUTE PICKUP: Vehicle full, skipping pickup at " + dock.Name);
+                    SetState(DriverState.ReleasingDock);
+                    return;
+                }
+
+                // Find nearby storage and transfer
+                var storage = FindNearestWorldStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                if (storage != null)
+                {
+                    int transferred = TransferItems(storage, _vehicle.Storage, "ROUTE_PICKUP");
+                    MelonLogger.Msg("  Picked up " + transferred + " item(s) from " + storage.name);
+                }
+                else
+                {
+                    MelonLogger.Warning("ROUTE PICKUP: No nearby storage at " + dock.Name + " — nothing to pick up");
+                }
+
+                MelonLogger.Msg("  Vehicle slots after: " + CountOccupiedSlots(_vehicle.Storage) +
+                    "/" + _vehicle.Storage.ItemSlots.Count);
+                SetState(DriverState.ReleasingDock);
+            }
+            else if (_sourceDock != null)
             {
                 // Dock mode: items are pre-populated in vehicle.
-                // Log that dock OutputSlots reflect vehicle storage.
                 MelonLogger.Msg("DOCK LOAD: Vehicle has " + CountOccupiedSlots(_vehicle.Storage) + " occupied slots");
                 MelonLogger.Msg("DOCK LOAD: Dock OutputSlots count = " + _sourceDock.OutputSlots.Count);
 
@@ -667,7 +859,36 @@ namespace DeliveryDriversMod
 
         private void EnterUnloadingCargo()
         {
-            if (_destDock != null)
+            if (_routeAssignment != null)
+            {
+                // Route mode: transfer items from vehicle to nearby storage
+                var stop = _routeAssignment.CurrentStop;
+                var dock = stop.ResolvedDock;
+                int stopNum = _routeAssignment.CurrentStopIndex + 1;
+                int stopTotal = _routeAssignment.Route.Stops.Count;
+
+                MelonLogger.Msg("ROUTE DROPOFF: Stop " + stopNum + "/" + stopTotal +
+                    " at " + dock.Name + " (" + dock.ParentProperty.PropertyName + ")");
+                MelonLogger.Msg("  Vehicle slots occupied: " + CountOccupiedSlots(_vehicle.Storage) +
+                    "/" + _vehicle.Storage.ItemSlots.Count);
+
+                var storage = FindNearestWorldStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                if (storage != null)
+                {
+                    int transferred = TransferItems(_vehicle.Storage, storage, "ROUTE_DROPOFF");
+                    MelonLogger.Msg("  Dropped off " + transferred + " item(s) to " + storage.name);
+                }
+                else
+                {
+                    MelonLogger.Warning("ROUTE DROPOFF: No nearby storage at " + dock.Name +
+                        " — items remain in vehicle");
+                }
+
+                MelonLogger.Msg("  Vehicle slots after: " + CountOccupiedSlots(_vehicle.Storage) +
+                    "/" + _vehicle.Storage.ItemSlots.Count);
+                SetState(DriverState.ReleasingDock);
+            }
+            else if (_destDock != null)
             {
                 // Dock mode: log dock state, transfer to nearby WorldStorageEntity if available
                 MelonLogger.Msg("DOCK UNLOAD: Vehicle has " + CountOccupiedSlots(_vehicle.Storage) + " occupied slots");
@@ -705,7 +926,7 @@ namespace DeliveryDriversMod
 
         private void EnterOccupyingDock()
         {
-            LoadingDock dock = (_currentLeg == DeliveryLeg.Pickup) ? _sourceDock : _destDock;
+            LoadingDock dock = GetCurrentDock();
 
             MelonLogger.Msg("Setting dock occupancy: " + dock.Name +
                 " (property: " + dock.ParentProperty.PropertyName + ")");
@@ -717,10 +938,21 @@ namespace DeliveryDriversMod
             MelonLogger.Msg("  Vehicle storage slots: " + _vehicle.Storage.ItemSlots.Count);
 
             // Transition to cargo transfer
-            if (_currentLeg == DeliveryLeg.Pickup)
+            if (_routeAssignment != null)
+            {
+                if (_routeAssignment.CurrentStop.Action == StopAction.Pickup)
+                    SetState(DriverState.LoadingCargo);
+                else
+                    SetState(DriverState.UnloadingCargo);
+            }
+            else if (_currentLeg == DeliveryLeg.Pickup)
+            {
                 SetState(DriverState.LoadingCargo);
+            }
             else
+            {
                 SetState(DriverState.UnloadingCargo);
+            }
         }
 
         #endregion
@@ -729,7 +961,7 @@ namespace DeliveryDriversMod
 
         private void EnterReleasingDock()
         {
-            LoadingDock dock = (_currentLeg == DeliveryLeg.Pickup) ? _sourceDock : _destDock;
+            LoadingDock dock = GetCurrentDock();
 
             MelonLogger.Msg("Releasing dock: " + dock.Name);
 
@@ -739,7 +971,28 @@ namespace DeliveryDriversMod
             MelonLogger.Msg("  StaticOccupant cleared: " + (dock.StaticOccupant == null));
             MelonLogger.Msg("  IsInUse: " + dock.IsInUse);
 
-            if (_currentLeg == DeliveryLeg.Pickup)
+            if (_routeAssignment != null)
+            {
+                _routeAssignment.AdvanceToNextStop();
+
+                if (_routeAssignment.IsComplete)
+                {
+                    float elapsed = Time.time - _routeStartTime;
+                    MelonLogger.Msg("Route '" + _routeAssignment.Route.Name + "' complete — " +
+                        _routeAssignment.Route.Stops.Count + " stops in " + elapsed.ToString("F1") + "s");
+                    SetState(DriverState.ExitingVehicle);
+                }
+                else
+                {
+                    var nextStop = _routeAssignment.CurrentStop;
+                    _destination = nextStop.ResolvedParking;
+                    MelonLogger.Msg("Advancing to stop " + (_routeAssignment.CurrentStopIndex + 1) +
+                        "/" + _routeAssignment.Route.Stops.Count +
+                        " (" + nextStop.Action + " at " + nextStop.ResolvedDock.Name + ")");
+                    SetState(DriverState.Driving);
+                }
+            }
+            else if (_currentLeg == DeliveryLeg.Pickup)
             {
                 // Switch to delivery leg
                 _destination = _destParkingLot;
@@ -786,7 +1039,11 @@ namespace DeliveryDriversMod
         {
             var exitPos = _npc != null ? _npc.transform.position.ToString() : "unknown";
 
-            if (_sourceDock != null)
+            if (_routeAssignment != null)
+            {
+                MelonLogger.Msg("Route test complete: NPC exited at " + exitPos);
+            }
+            else if (_sourceDock != null)
             {
                 MelonLogger.Msg("Dock test complete: NPC exited at " + exitPos);
             }
@@ -809,6 +1066,7 @@ namespace DeliveryDriversMod
             _destParkingLot = null;
             _sourceDock = null;
             _destDock = null;
+            _routeAssignment = null;
             _state = DriverState.Idle;
         }
 
@@ -1139,5 +1397,90 @@ namespace DeliveryDriversMod
         }
 
         #endregion
+
+        #region Route Helpers
+
+        private bool ResolveRouteStops(RouteAssignment assignment)
+        {
+            for (int i = 0; i < assignment.Route.Stops.Count; i++)
+            {
+                var stop = assignment.Route.Stops[i];
+                var dock = GUIDManager.GetObject<LoadingDock>(new Guid(stop.DockGUID));
+                if (dock == null)
+                {
+                    MelonLogger.Error("Route stop " + (i + 1) + " references unknown dock GUID: " + stop.DockGUID);
+                    return false;
+                }
+                stop.ResolvedDock = dock;
+                stop.ResolvedParking = dock.Parking;
+                if (stop.ResolvedParking == null)
+                {
+                    MelonLogger.Error("Dock '" + dock.Name + "' has no Parking assigned");
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private LoadingDock GetCurrentDock()
+        {
+            if (_routeAssignment != null)
+                return _routeAssignment.CurrentStop.ResolvedDock;
+            return (_currentLeg == DeliveryLeg.Pickup) ? _sourceDock : _destDock;
+        }
+
+        private List<LoadingDock> FindAllAvailableDocks()
+        {
+            var docks = new List<LoadingDock>();
+            foreach (var prop in Property.OwnedProperties)
+            {
+                if (prop?.LoadingDocks == null) continue;
+                foreach (var dock in prop.LoadingDocks)
+                {
+                    if (dock?.Parking?.EntryPoint != null)
+                        docks.Add(dock);
+                }
+            }
+            return docks;
+        }
+
+        private bool PopulateDockStorage(LoadingDock dock, string itemId, int count)
+        {
+            var storage = FindNearestWorldStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+            if (storage == null)
+            {
+                MelonLogger.Warning("No WorldStorageEntity near dock '" + dock.Name +
+                    "' — cannot pre-populate for pickup");
+                return false;
+            }
+
+            try
+            {
+                ItemDefinition def = Registry.GetItem(itemId);
+                if (def == null)
+                {
+                    MelonLogger.Error("Registry.GetItem('" + itemId + "') returned null");
+                    return false;
+                }
+
+                for (int i = 0; i < count; i++)
+                {
+                    ItemInstance instance = def.GetDefaultInstance(1);
+                    storage.InsertItem(instance, true);
+                }
+
+                MelonLogger.Msg("  Pre-populated " + count + "x " + itemId + " in " +
+                    storage.name + " (near " + dock.Name + ")");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("Failed to populate dock storage: " + ex);
+                return false;
+            }
+        }
+
+        #endregion
     }
 }
+
