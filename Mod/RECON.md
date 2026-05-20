@@ -678,6 +678,7 @@ For our mod, we could either:
 7. **AI Pathfinding Failures.** `VehicleAgent.Navigate()` can fail (graph not reachable, stuck detection). The `ENavigationResult.Failed` callback needs robust handling. **Mitigation:** Implement retry logic with exponential backoff; use `VehicleTeleporter` as last resort.
 **Status (validated milestone 2):** Partially downgraded. Short cross-property routes complete cleanly with `ENavigationResult.Complete`. Longer routes and edge cases (blocked paths, distant destinations) are still untested.
 **Status (validated milestone 4):** Further downgraded. Long-distance routes (~233m) complete cleanly. Failure callback path still untested.
+**Status (validated milestone 5):** REVISED. Short and medium routes work, but a new failure mode was observed: vehicle became physically stuck against a tree on the Storage Unit → Hyland Manor leg. Neither `GetIsStuck()` detection nor `VehicleTeleporter` recovery triggered in observed time. Required manual intervention. Severity: medium for current dev testing, high for production use cases like overnight scheduled routes (M7).
 
 ### Low Risk
 
@@ -731,6 +732,17 @@ For our mod, we could either:
 - **Cargo transfer at docks uses the same direct-Storage transfer pattern as M3.** `OutputSlots` are populated for DynamicOccupants only (not StaticOccupants), so we do not interact with OutputSlots.
 - **Long-distance driving (~233m, Storage Unit → Hyland Manor) completes via `VehicleAgent.Navigate`.** Realistic ~5 minute transit time with no pathfinding failures or stuck detection triggers.
 - **Vehicle-NPC collisions during AI driving are non-fatal and unattributed.** Struck NPCs receive ~36 HP damage and ragdoll, but `DriverPlayer == null` for NPC drivers means no relationship penalty, no wanted-level, no police response, no witness reaction. See ./Mod/INVESTIGATION_VEHICLE_DAMAGE.md.
+
+### Validated in M5 (Round-Trip Routes)
+
+- **`GUIDManager.GetObject<LoadingDock>(new Guid(guidString))` reliably resolves dock references from persisted GUIDs.** Confirms LoadingDock implements IGUIDRegisterable correctly and that GUID-based identification is the right strategy for M6 persistence.
+- **The same dock can serve multiple roles in a single route (pickup at stop 1, dropoff at stop 4) without state contamination.** `SetStaticOccupant` set/clear cycles cleanly across reuse.
+- **Cargo state persists correctly across multiple stops.** Items picked up at stop 1 (5x cash) were retained through stop 2's failed dropoff and stop 3's skipped pickup, then successfully delivered at stop 4 — no item duplication or loss.
+- **Capacity overflow handling works as designed.** When vehicle is full at a pickup stop, the transfer is logged and skipped, and the route continues to the next stop without aborting.
+- **Missing-storage graceful degradation works.** When a dock has no nearby WorldStorageEntity, the transfer is skipped with a warning and the route continues. (See Phase 2 Enhancements — this is currently a silent test-validity problem that needs production hardening.)
+- **Route data structure (`Route`, `RouteStop`, `RouteAssignment` in Route.cs) is sufficient to express N-stop routes with same-dock reuse.** Ready for M6 JSON serialization after a small refactor (see Phase 2 Enhancements).
+- **State machine refactor to handle N stops via `RouteAssignment.CurrentStopIndex` works correctly.** Stop advancement, route completion detection, and final exit transitions all execute cleanly.
+- **Long-distance multi-leg routes complete successfully.** Total test route took ~463 seconds (~7.7 minutes real-time) covering Storage Unit ↔ Hyland Manor twice.
 
 ---
 
@@ -901,6 +913,10 @@ The one Harmony patch worth considering: a **Postfix on `LoadingDock.RefreshOccu
 > Ideas surfaced during Phase 1 development. NOT in the current milestone roadmap — for future consideration.
 
 - **Driver "carefulness" stat:** NPCs can hit pedestrians while driving. Per ./Mod/INVESTIGATION_VEHICLE_DAMAGE.md: damage IS applied to struck NPCs (~36 HP at 30 km/h relative speed) but no attribution, relationship penalty, crime, or police response occurs because `DriverPlayer` is null for AI-driven vehicles. The cosmetic concern is NPC ragdolls; the real concern is if a Customer or Dealer is killed by accumulated damage. Phase 2 could add per-driver carefulness affecting routing aggressiveness, speed, and pedestrian avoidance.
+
+- **Vehicle pathing edge cases.** AI-driven vehicles can become physically stuck against scenery (trees, terrain) on longer routes. Observed during M5 testing on the Storage Unit → Hyland Manor leg — vehicle hit a tree, both stuck detection and VehicleTeleporter recovery failed to trigger. Required manual intervention (player physically pushed the vehicle). Affects route reliability for long unattended deliveries. Investigate StuckDetection threshold tuning, VehicleTeleporter trigger conditions, and possibly DriveFlags.ObstacleMode configuration during polish phase. Will become critical when M7 (scheduling) enables overnight automated routes.
+
+- **Silent failure on missing dock storage.** When a pickup or dropoff dock has no nearby WorldStorageEntity, the route silently continues with empty/skipped transfers. Currently logged as a warning, not an error. Observed during M5 test: Loading Dock 2 at Hyland Manor had no nearby storage, causing stop 2's dropoff to be a no-op. The state machine handled it gracefully but the test could not verify cargo transfer at that stop. Future hardening: either require valid storage at route definition time (player-facing validation in M9 UI) or pre-flight check at route execution start (deferred to a small pre-M6 cleanup task).
 
 ---
 

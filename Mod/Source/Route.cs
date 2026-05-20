@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using ScheduleOne.Delivery;
 using ScheduleOne.Map;
@@ -12,23 +11,29 @@ namespace DeliveryDriversMod
     }
 
     /// <summary>
-    /// A single stop in a delivery route.
-    /// References a dock by GUID string (serializable, no direct object reference).
+    /// A single stop in a delivery route — pure serializable data.
+    /// References a dock by GUID string (no runtime object references).
     /// </summary>
     public class RouteStop
     {
         public string DockGUID { get; set; }
         public StopAction Action { get; set; }
 
-        // Resolved at runtime, NOT serialized
-        [NonSerialized] public LoadingDock ResolvedDock;
-        [NonSerialized] public ParkingLot ResolvedParking;
-
         public RouteStop(string dockGuid, StopAction action)
         {
             DockGUID = dockGuid;
             Action = action;
         }
+    }
+
+    /// <summary>
+    /// Runtime-resolved references for a single route stop.
+    /// Populated when a RouteAssignment is created, not serialized.
+    /// </summary>
+    public struct ResolvedStop
+    {
+        public LoadingDock Dock;
+        public ParkingLot Parking;
     }
 
     /// <summary>
@@ -58,6 +63,13 @@ namespace DeliveryDriversMod
         public bool IsComplete => CurrentStopIndex >= Route.Stops.Count;
 
         public RouteStop CurrentStop => IsComplete ? null : Route.Stops[CurrentStopIndex];
+
+        /// <summary>
+        /// Parallel list of resolved runtime references, indexed same as Route.Stops.
+        /// Populated by ResolveRouteStops() after assignment creation.
+        /// </summary>
+        public List<ResolvedStop> ResolvedStops { get; } = new List<ResolvedStop>();
+        public ResolvedStop CurrentResolvedStop => ResolvedStops[CurrentStopIndex];
 
         public RouteAssignment(Route route)
         {
