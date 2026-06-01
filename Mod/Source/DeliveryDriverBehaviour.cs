@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using FishNet;
 using MelonLoader;
 using ScheduleOne;
@@ -8,6 +9,7 @@ using ScheduleOne.Delivery;
 using ScheduleOne.DevUtilities;
 using ScheduleOne.ItemFramework;
 using ScheduleOne.Map;
+using ScheduleOne.Math;
 using ScheduleOne.NPCs;
 using ScheduleOne.ObjectScripts;
 using ScheduleOne.PlayerScripts;
@@ -66,6 +68,23 @@ namespace DeliveryDriversMod
         private Vector3 _walkTarget;
         private bool _navigationCallbackFired;
         private VehicleAgent.ENavigationResult _navigationResult;
+        private float _navStartTime;
+        private Vector3 _navStartPos;
+        private Vector3 _navDestPos;
+
+        // Approach-point probe (M5.5 mode-1 fix)
+        private enum ProbePhase { NotStarted, InFlight, Complete, Failed }
+        private const int MAX_PROBE_CANDIDATES = 36;
+        private const float PARK_GAP_WARN_M = 8f;
+        private static readonly Dictionary<Guid, Vector3> _dockApproachCache = new Dictionary<Guid, Vector3>();
+        private static FieldInfo _generalSeekerField;
+        private static FieldInfo _roadSeekerField;
+        private Vector3? _navOverridePoint;
+        private ProbePhase _probePhase;
+        private List<Vector3> _probeCandidates;
+        private int _probeIndex;
+        private bool _probeCalcCallbackFired;
+        private NavigationUtility.ENavigationCalculationResult _probeCalcResult;
 
         public bool IsRunning => _state != DriverState.Idle && _state != DriverState.Done;
 
@@ -700,6 +719,20 @@ namespace DeliveryDriversMod
         private void EnterDriving()
         {
             _navigationCallbackFired = false;
+            _probePhase = ProbePhase.NotStarted;
+            _probeCandidates = null;
+            _probeIndex = 0;
+            _probeCalcCallbackFired = false;
+            _navOverridePoint = null;
+
+            // Cache hit: skip the raw-entry attempt and head straight to the known-reachable point.
+            var currentDock = _routeAssignment?.CurrentResolvedStop.Dock;
+            if (currentDock != null && _dockApproachCache.TryGetValue(currentDock.GUID, out Vector3 cached))
+            {
+                _navOverridePoint = cached;
+                MelonLogger.Msg("PROBE cache hit: dock=" + currentDock.Name +
+                    " using cached approach=" + cached.ToString("F2"));
+            }
 
             try
             {
@@ -719,45 +752,238 @@ namespace DeliveryDriversMod
 
         private void UpdateDriving()
         {
-            // If callback already fired, handle the result
+            // If Navigate's callback already fired, handle the result
             if (_navigationCallbackFired)
             {
+                float elapsed = Time.time - _navStartTime;
                 switch (_navigationResult)
                 {
                     case VehicleAgent.ENavigationResult.Complete:
-                        MelonLogger.Msg("Navigation complete, parking...");
+                        MelonLogger.Msg("NAV end: result=Complete elapsed=" + elapsed.ToString("F2") + "s");
+                        if (_navOverridePoint.HasValue)
+                        {
+                            float gap = Vector3.Distance(_vehicle.transform.position, _destination.EntryPoint.position);
+                            if (gap > PARK_GAP_WARN_M)
+                            {
+                                MelonLogger.Warning("PARK gap: vehicle is " + gap.ToString("F2") +
+                                    "m from raw dock entry — Park() will teleport-snap to spot");
+                            }
+                        }
                         SetState(DriverState.Parking);
                         break;
                     case VehicleAgent.ENavigationResult.Failed:
-                        MelonLogger.Error("Navigation FAILED — aborting");
+                        MelonLogger.Error("NAV end: result=Failed elapsed=" + elapsed.ToString("F2") +
+                            "s endPos=" + _vehicle.transform.position.ToString("F2") +
+                            " [" + DescribeNavPoint(_vehicle.transform.position) + "]");
+                        // Route mode + probe not yet attempted: ring-probe for an alternate approach point
+                        if (_routeAssignment != null && _probePhase == ProbePhase.NotStarted)
+                        {
+                            StartProbe();
+                            _navigationCallbackFired = false; // allow Navigate to fire again after probe
+                            return;
+                        }
                         SetState(DriverState.Done);
                         break;
                     case VehicleAgent.ENavigationResult.Stopped:
-                        MelonLogger.Warning("Navigation STOPPED — aborting");
+                        MelonLogger.Warning("NAV end: result=Stopped elapsed=" + elapsed.ToString("F2") + "s");
                         SetState(DriverState.Done);
                         break;
                 }
                 return;
             }
 
-            // Start navigation after a brief delay (allow unpark to settle)
+            // Probe in flight: tick it until reachability resolved
+            if (_probePhase == ProbePhase.InFlight)
+            {
+                TickProbe();
+                return;
+            }
+            if (_probePhase == ProbePhase.Failed)
+            {
+                SetState(DriverState.Done);
+                return;
+            }
+
+            // Ready to issue Navigate (initial attempt, or post-probe with override point)
             if (!_vehicle.Agent.AutoDriving && _stateTimer > UNPARK_DELAY)
             {
-                MelonLogger.Msg("Starting navigation to " + _destination.EntryPoint.position);
-                try
+                StartNavigation();
+            }
+        }
+
+        private void StartNavigation()
+        {
+            Vector3 target = _navOverridePoint ?? _destination.EntryPoint.position;
+            _navStartPos = _vehicle.transform.position;
+            _navDestPos = target;
+            _navStartTime = Time.time;
+            string startProp = DescribeNavPoint(_navStartPos);
+            string destProp = DescribeNavPoint(_navDestPos);
+            float dist = Vector3.Distance(_navStartPos, _navDestPos);
+            string legLabel = _routeAssignment != null
+                ? ("route stop " + (_routeAssignment.CurrentStopIndex + 1) +
+                    "/" + _routeAssignment.Route.Stops.Count + " " + _routeAssignment.CurrentStop.Action)
+                : "non-route";
+            MelonLogger.Msg("NAV begin (" + legLabel + "): start=" + _navStartPos.ToString("F2") +
+                " [" + startProp + "] -> dest=" + _navDestPos.ToString("F2") +
+                " [" + destProp + "] dist=" + dist.ToString("F1") + "m" +
+                (_navOverridePoint.HasValue ? " (probe-resolved)" : ""));
+
+            try
+            {
+                _vehicle.Agent.Navigate(
+                    target,
+                    null,
+                    new VehicleAgent.NavigationCallback(OnNavigationComplete)
+                );
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("Navigate() threw: " + ex);
+                SetState(DriverState.Done);
+            }
+        }
+
+        // --- Ring probe (mode-1 fix) ----------------------------------------
+
+        private void StartProbe()
+        {
+            var dock = _routeAssignment.CurrentResolvedStop.Dock;
+            Vector3 entry = _destination.EntryPoint.position;
+            _probeCandidates = GenerateRingCandidates(entry);
+            _probeIndex = 0;
+            _probeCalcCallbackFired = false;
+            _probePhase = ProbePhase.InFlight;
+            MelonLogger.Msg("PROBE begin: dock=" + dock.Name + " entry=" + entry.ToString("F2") +
+                " candidates=" + _probeCandidates.Count);
+            IssueProbe(_probeCandidates[_probeIndex]);
+        }
+
+        private void TickProbe()
+        {
+            if (!_probeCalcCallbackFired) return;
+
+            Vector3 current = _probeCandidates[_probeIndex];
+            if (_probeCalcResult == NavigationUtility.ENavigationCalculationResult.Success)
+            {
+                var dock = _routeAssignment.CurrentResolvedStop.Dock;
+                _dockApproachCache[dock.GUID] = current;
+                _navOverridePoint = current;
+                _probePhase = ProbePhase.Complete;
+                MelonLogger.Msg("PROBE success: dock=" + dock.Name +
+                    " candidate " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
+                    " at " + current.ToString("F2") + " (cached)");
+                return;
+            }
+
+            MelonLogger.Msg("PROBE try " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
+                " at " + current.ToString("F2") + " -> Failed");
+            _probeIndex++;
+            if (_probeIndex >= _probeCandidates.Count)
+            {
+                var dock = _routeAssignment.CurrentResolvedStop.Dock;
+                MelonLogger.Error("PROBE FAILED: no reachable approach point near dock " + dock.Name +
+                    " after " + _probeCandidates.Count + " candidates — aborting route");
+                _probePhase = ProbePhase.Failed;
+                return;
+            }
+            _probeCalcCallbackFired = false;
+            IssueProbe(_probeCandidates[_probeIndex]);
+        }
+
+        private void IssueProbe(Vector3 candidate)
+        {
+            if (!ReflectSeekers(out object generalSeeker, out object roadSeeker))
+            {
+                MelonLogger.Error("PROBE: could not reflect VehicleAgent seekers");
+                _probePhase = ProbePhase.Failed;
+                return;
+            }
+            Vector3 start = _vehicle.transform.position;
+            try
+            {
+                var calcMethod = typeof(NavigationUtility).GetMethod("CalculatePath",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (calcMethod == null)
                 {
-                    _vehicle.Agent.Navigate(
-                        _destination.EntryPoint.position,
-                        null,
-                        new VehicleAgent.NavigationCallback(OnNavigationComplete)
-                    );
+                    MelonLogger.Error("PROBE: NavigationUtility.CalculatePath not found via reflection");
+                    _probePhase = ProbePhase.Failed;
+                    return;
                 }
-                catch (Exception ex)
+                var callback = new NavigationUtility.NavigationCalculationCallback(OnProbeCalcCallback);
+                calcMethod.Invoke(null, new object[]
                 {
-                    MelonLogger.Error("Navigate() threw: " + ex);
-                    SetState(DriverState.Done);
+                    start, candidate, new NavigationSettings(), _vehicle.Agent.Flags,
+                    generalSeeker, roadSeeker, callback
+                });
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("PROBE: CalculatePath invoke failed: " + ex);
+                _probePhase = ProbePhase.Failed;
+            }
+        }
+
+        private void OnProbeCalcCallback(NavigationUtility.ENavigationCalculationResult result,
+            PathSmoothingUtility.SmoothedPath path)
+        {
+            _probeCalcResult = result;
+            _probeCalcCallbackFired = true;
+        }
+
+        private bool ReflectSeekers(out object general, out object road)
+        {
+            general = null; road = null;
+            if (_vehicle == null || _vehicle.Agent == null) return false;
+            if (_generalSeekerField == null || _roadSeekerField == null)
+            {
+                var t = typeof(VehicleAgent);
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                _generalSeekerField = t.GetField("generalSeeker", flags);
+                _roadSeekerField = t.GetField("roadSeeker", flags);
+            }
+            if (_generalSeekerField == null || _roadSeekerField == null) return false;
+            general = _generalSeekerField.GetValue(_vehicle.Agent);
+            road = _roadSeekerField.GetValue(_vehicle.Agent);
+            return general != null && road != null;
+        }
+
+        private static List<Vector3> GenerateRingCandidates(Vector3 entry)
+        {
+            // 1 raw entry + 12 + 12 + 11 = 36 candidates, ordered nearest-first.
+            var list = new List<Vector3>(MAX_PROBE_CANDIDATES);
+            list.Add(entry);
+            float[] radii = { 6f, 12f, 24f };
+            int[] anglesPerRadius = { 12, 12, 11 };
+            for (int r = 0; r < radii.Length; r++)
+            {
+                int n = anglesPerRadius[r];
+                for (int a = 0; a < n; a++)
+                {
+                    float deg = (360f / n) * a;
+                    float rad = deg * Mathf.Deg2Rad;
+                    list.Add(new Vector3(
+                        entry.x + Mathf.Cos(rad) * radii[r],
+                        entry.y,
+                        entry.z + Mathf.Sin(rad) * radii[r]));
                 }
             }
+            return list;
+        }
+
+        private static string DescribeNavPoint(Vector3 pos)
+        {
+            foreach (var prop in Property.OwnedProperties)
+            {
+                if (prop != null && prop.DoBoundsContainPoint(pos))
+                    return prop.PropertyName;
+            }
+            foreach (var prop in Property.UnownedProperties)
+            {
+                if (prop != null && prop.DoBoundsContainPoint(pos))
+                    return prop.PropertyName + " (unowned)";
+            }
+            return "open";
         }
 
         private void OnNavigationComplete(VehicleAgent.ENavigationResult result)

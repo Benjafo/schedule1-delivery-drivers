@@ -12,6 +12,7 @@ using ScheduleOne.PlayerScripts;
 using ScheduleOne.Property;
 using ScheduleOne.Storage;
 using ScheduleOne.Vehicles;
+using ScheduleOne.Vehicles.AI;
 using UnityEngine;
 
 [assembly: MelonInfo(typeof(DeliveryDriversMod.DeliveryDriversMod), "DeliveryDriversMod", "0.1.0", "Benjafo")]
@@ -61,6 +62,11 @@ namespace DeliveryDriversMod
         public override void OnUpdate()
         {
             if (NPCSpawner.Instance == null) return;
+
+            if (Input.GetKeyDown(KeyCode.F4))
+            {
+                AuditDockGraphProximity();
+            }
 
             if (Input.GetKeyDown(KeyCode.F5))
             {
@@ -232,6 +238,54 @@ namespace DeliveryDriversMod
             }
         }
 
+        private static void AuditDockGraphProximity()
+        {
+            MelonLogger.Msg("F4: AUDIT — measuring dock EntryPoint distance to General Vehicle Graph");
+            int count = 0;
+            float threshold = 6f; // RECON §1: vehicles >6f from graph get teleported back
+            foreach (var prop in Property.OwnedProperties)
+                count += AuditPropertyDocks(prop, "owned", threshold);
+            foreach (var prop in Property.UnownedProperties)
+                count += AuditPropertyDocks(prop, "unowned", threshold);
+            MelonLogger.Msg("F4: AUDIT done — " + count + " dock(s) measured");
+        }
+
+        private static int AuditPropertyDocks(Property prop, string ownership, float threshold)
+        {
+            if (prop == null || prop.LoadingDocks == null) return 0;
+            int n = 0;
+            foreach (var dock in prop.LoadingDocks)
+            {
+                if (dock == null) continue;
+                if (dock.Parking == null || dock.Parking.EntryPoint == null)
+                {
+                    MelonLogger.Msg("AUDIT  " + ownership + "  " + prop.PropertyName +
+                        "  " + dock.Name + "  NO ENTRYPOINT");
+                    n++;
+                    continue;
+                }
+                Vector3 entry = dock.Parking.EntryPoint.position;
+                Vector3 onGraph;
+                try { onGraph = NavigationUtility.SampleVehicleGraph(entry); }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg("AUDIT  " + ownership + "  " + prop.PropertyName +
+                        "  " + dock.Name + "  SAMPLE FAILED: " + ex.Message);
+                    n++;
+                    continue;
+                }
+                float dist = Vector3.Distance(entry, onGraph);
+                string verdict = dist <= threshold ? "OK" : "OFF-GRAPH";
+                MelonLogger.Msg("AUDIT  " + ownership + "  " + prop.PropertyName +
+                    "  " + dock.Name +
+                    "  entry=" + entry.ToString("F2") +
+                    "  graph=" + onGraph.ToString("F2") +
+                    "  dist=" + dist.ToString("F2") + "m  " + verdict);
+                n++;
+            }
+            return n;
+        }
+
         private void TeleportToNextEmptyProperty()
         {
             if (Player.Local == null)
@@ -240,23 +294,35 @@ namespace DeliveryDriversMod
                 return;
             }
 
-            var empties = Property.OwnedProperties
+            var withDocks = Property.OwnedProperties
                 .Where(p => p != null && p.LoadingDocks != null && p.LoadingDocks.Length > 0)
                 .Where(p => p.LoadingDocks.Any(d => d != null && d.Parking?.EntryPoint != null))
-                .Where(p => !PropertyHasStorage(p))
                 .ToList();
 
-            if (empties.Count == 0)
+            if (withDocks.Count == 0)
             {
-                MelonLogger.Msg("F5: All owned properties with docks already have in-bounds storage. Nothing to do.");
-                _rackTeleportIndex = 0;
+                MelonLogger.Warning("F5: No owned properties with usable docks");
                 return;
             }
 
-            EnsureStorageRackInInventory();
+            var empties = withDocks.Where(p => !PropertyHasStorage(p)).ToList();
+            List<Property> cycle;
+            string mode;
+            if (empties.Count > 0)
+            {
+                EnsureStorageRackInInventory();
+                cycle = empties;
+                mode = "missing storage";
+            }
+            else
+            {
+                MelonLogger.Msg("F5: All owned properties with docks already have in-bounds storage — cycling for positioning.");
+                cycle = withDocks;
+                mode = "all owned";
+            }
 
-            _rackTeleportIndex %= empties.Count;
-            var target = empties[_rackTeleportIndex];
+            _rackTeleportIndex %= cycle.Count;
+            var target = cycle[_rackTeleportIndex];
             var firstDock = target.LoadingDocks.FirstOrDefault(d => d != null && d.Parking?.EntryPoint != null);
             Vector3 pos = firstDock != null
                 ? firstDock.transform.position + Vector3.up * 1f
@@ -264,7 +330,7 @@ namespace DeliveryDriversMod
 
             Player.Local.transform.position = pos;
             MelonLogger.Msg("F5: Teleported to '" + target.PropertyName + "' (" +
-                (_rackTeleportIndex + 1) + "/" + empties.Count + " missing storage) at " + pos);
+                (_rackTeleportIndex + 1) + "/" + cycle.Count + " " + mode + ") at " + pos);
             _rackTeleportIndex++;
         }
 
