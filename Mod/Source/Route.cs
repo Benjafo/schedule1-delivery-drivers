@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using ScheduleOne.Delivery;
 using ScheduleOne.Map;
+using ScheduleOne.Storage;
 
 namespace DeliveryDriversMod
 {
@@ -34,6 +35,7 @@ namespace DeliveryDriversMod
     {
         public LoadingDock Dock;
         public ParkingLot Parking;
+        public StorageEntity Storage;
     }
 
     /// <summary>

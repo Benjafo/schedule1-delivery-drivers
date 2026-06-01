@@ -3,10 +3,14 @@ using System.Collections.Generic;
 using System.Linq;
 using FishNet;
 using MelonLoader;
+using ScheduleOne;
 using ScheduleOne.Delivery;
 using ScheduleOne.DevUtilities;
+using ScheduleOne.ItemFramework;
+using ScheduleOne.ObjectScripts;
 using ScheduleOne.PlayerScripts;
 using ScheduleOne.Property;
+using ScheduleOne.Storage;
 using ScheduleOne.Vehicles;
 using UnityEngine;
 
@@ -19,6 +23,7 @@ namespace DeliveryDriversMod
     {
         private bool _managerCreated;
         private int _vehiclePrefabIndex;
+        private int _rackTeleportIndex;
 
         public override void OnInitializeMelon()
         {
@@ -56,6 +61,11 @@ namespace DeliveryDriversMod
         public override void OnUpdate()
         {
             if (NPCSpawner.Instance == null) return;
+
+            if (Input.GetKeyDown(KeyCode.F5))
+            {
+                TeleportToNextEmptyProperty();
+            }
 
             if (Input.GetKeyDown(KeyCode.F6))
             {
@@ -220,6 +230,105 @@ namespace DeliveryDriversMod
                 foreach (var p in prefabs) codes.Add(p.VehicleCode);
                 MelonLogger.Msg("Available vehicle codes: " + string.Join(", ", codes));
             }
+        }
+
+        private void TeleportToNextEmptyProperty()
+        {
+            if (Player.Local == null)
+            {
+                MelonLogger.Warning("F5: Player.Local is null");
+                return;
+            }
+
+            var empties = Property.OwnedProperties
+                .Where(p => p != null && p.LoadingDocks != null && p.LoadingDocks.Length > 0)
+                .Where(p => p.LoadingDocks.Any(d => d != null && d.Parking?.EntryPoint != null))
+                .Where(p => !PropertyHasStorage(p))
+                .ToList();
+
+            if (empties.Count == 0)
+            {
+                MelonLogger.Msg("F5: All owned properties with docks already have in-bounds storage. Nothing to do.");
+                _rackTeleportIndex = 0;
+                return;
+            }
+
+            EnsureStorageRackInInventory();
+
+            _rackTeleportIndex %= empties.Count;
+            var target = empties[_rackTeleportIndex];
+            var firstDock = target.LoadingDocks.FirstOrDefault(d => d != null && d.Parking?.EntryPoint != null);
+            Vector3 pos = firstDock != null
+                ? firstDock.transform.position + Vector3.up * 1f
+                : target.transform.position + Vector3.up * 1f;
+
+            Player.Local.transform.position = pos;
+            MelonLogger.Msg("F5: Teleported to '" + target.PropertyName + "' (" +
+                (_rackTeleportIndex + 1) + "/" + empties.Count + " missing storage) at " + pos);
+            _rackTeleportIndex++;
+        }
+
+        private static bool PropertyHasStorage(Property prop)
+        {
+            foreach (var s in WorldStorageEntity.All)
+            {
+                if (s == null || !s.gameObject.activeInHierarchy) continue;
+                if (prop.DoBoundsContainPoint(s.transform.position)) return true;
+            }
+            foreach (var p in UnityEngine.Object.FindObjectsOfType<PlaceableStorageEntity>())
+            {
+                if (p == null || !p.gameObject.activeInHierarchy || p.StorageEntity == null) continue;
+                if (prop.DoBoundsContainPoint(p.transform.position)) return true;
+            }
+            return false;
+        }
+
+        private void EnsureStorageRackInInventory()
+        {
+            var inv = PlayerSingleton<PlayerInventory>.Instance;
+            if (inv == null)
+            {
+                MelonLogger.Warning("F5: PlayerInventory not available");
+                return;
+            }
+
+            // Try common candidate IDs first, then scan the registry for any item whose
+            // ID contains "storage", "rack", and "large".
+            string[] candidates = { "storagerack_large", "largestoragerack", "storagerack-large", "large_storage_rack" };
+            ItemDefinition def = null;
+            foreach (var id in candidates)
+            {
+                if (Registry.ItemExists(id)) { def = Registry.GetItem(id); break; }
+            }
+            if (def == null)
+            {
+                var all = Singleton<Registry>.Instance.GetAllItems();
+                def = all.FirstOrDefault(d => d != null && !string.IsNullOrEmpty(d.ID) &&
+                    d.ID.IndexOf("storage", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    d.ID.IndexOf("rack", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    d.ID.IndexOf("large", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            if (def == null)
+            {
+                MelonLogger.Warning("F5: Could not find a large storage rack item in the Registry");
+                return;
+            }
+
+            uint have = inv.GetAmountOfItem(def.ID);
+            if (have > 0)
+            {
+                MelonLogger.Msg("F5: Inventory already has " + have + "x " + def.ID);
+                return;
+            }
+
+            var instance = def.GetDefaultInstance(1);
+            if (!inv.CanItemFitInInventory(instance, 1))
+            {
+                MelonLogger.Warning("F5: Inventory full, cannot add " + def.ID);
+                return;
+            }
+            inv.AddItemToInventory(instance);
+            MelonLogger.Msg("F5: Added 1x " + def.ID + " to inventory");
         }
     }
 }

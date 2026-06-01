@@ -456,12 +456,25 @@ namespace DeliveryDriversMod
             if (dockB == null)
                 dockB = docks.First(d => d != dockA);
 
-            // dockC: different from both A and B
+            // dockC: prefer a third distinct property so the route exercises
+            // three different storage locations (same-property docks share storage).
             foreach (var d in docks)
             {
                 if (d == dockA || d == dockB) continue;
+                if (d.ParentProperty == dockA.ParentProperty) continue;
+                if (d.ParentProperty == dockB.ParentProperty) continue;
                 dockC = d;
                 break;
+            }
+            // Fallback: any dock != A, B (only 2 distinct properties available)
+            if (dockC == null)
+            {
+                foreach (var d in docks)
+                {
+                    if (d == dockA || d == dockB) continue;
+                    dockC = d;
+                    break;
+                }
             }
             if (dockC == null)
             {
@@ -487,8 +500,7 @@ namespace DeliveryDriversMod
             {
                 var resolved = assignment.ResolvedStops[i];
                 var stopAction = route.Stops[i].Action;
-                var storage = FindNearestStorage(resolved.Dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
-                if (storage == null)
+                if (resolved.Storage == null)
                 {
                     preflightOk = false;
                     preflightErrors.Add("  Stop " + (i + 1) + " (" + stopAction + " at " +
@@ -505,10 +517,11 @@ namespace DeliveryDriversMod
                 return;
             }
 
-            // Pre-populate pickup sources with distinct items
+            // Pre-populate pickup sources via the cached per-stop storage references
+            // (stop 0 = dockA pickup, stop 2 = dockC pickup)
             MelonLogger.Msg("F6: Pre-populating pickup docks...");
-            PopulateDockStorage(dockA, "cash", 5);
-            PopulateDockStorage(dockC, "baggie", 5);
+            PopulateDockStorage(assignment.ResolvedStops[0].Storage, dockA, "cash", 5);
+            PopulateDockStorage(assignment.ResolvedStops[2].Storage, dockC, "baggie", 5);
 
             // Log route summary
             var playerPos = Player.Local.transform.position;
@@ -840,8 +853,8 @@ namespace DeliveryDriversMod
                     return;
                 }
 
-                // Find nearby storage and transfer
-                var storage = FindNearestStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                // Use storage resolved at route-resolution time (cached in ResolvedStop)
+                var storage = _routeAssignment.CurrentResolvedStop.Storage;
                 if (storage != null)
                 {
                     int transferred = TransferItems(storage, _vehicle.Storage, "ROUTE_PICKUP");
@@ -898,7 +911,7 @@ namespace DeliveryDriversMod
                 MelonLogger.Msg("  Vehicle slots occupied: " + CountOccupiedSlots(_vehicle.Storage) +
                     "/" + _vehicle.Storage.ItemSlots.Count);
 
-                var storage = FindNearestStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                var storage = _routeAssignment.CurrentResolvedStop.Storage;
                 if (storage != null)
                 {
                     int transferred = TransferItems(_vehicle.Storage, storage, "ROUTE_DROPOFF");
@@ -920,7 +933,7 @@ namespace DeliveryDriversMod
                 MelonLogger.Msg("DOCK UNLOAD: Vehicle has " + CountOccupiedSlots(_vehicle.Storage) + " occupied slots");
                 MelonLogger.Msg("DOCK UNLOAD: Dock OutputSlots count = " + _destDock.OutputSlots.Count);
 
-                var nearbyStorage = FindNearestStorage(_destDock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
+                var nearbyStorage = FindNearestStorage(_destDock, STORAGE_LOT_SEARCH_RADIUS);
                 if (nearbyStorage != null)
                 {
                     MelonLogger.Msg("DOCK UNLOAD: Found nearby storage " + nearbyStorage.name + ", transferring...");
@@ -1167,24 +1180,45 @@ namespace DeliveryDriversMod
             return count;
         }
 
-        private StorageEntity FindNearestStorage(Vector3 position, float maxDistance)
+        private string DescribeStorageLookup(string label, LoadingDock dock, StorageEntity storage)
         {
+            var dockPos = dock.transform.position;
+            if (storage == null)
+                return label + ": dock=" + dock.Name + " (" + dock.ParentProperty.PropertyName +
+                    ") dockPos=" + dockPos.ToString("F2") + " -> storage=NULL";
+            var sPos = storage.transform.position;
+            float dist = Vector3.Distance(dockPos, sPos);
+            return label + ": dock=" + dock.Name + " (" + dock.ParentProperty.PropertyName +
+                ") dockPos=" + dockPos.ToString("F2") +
+                " -> storage='" + storage.name + "'#" + storage.GetInstanceID() +
+                " sPos=" + sPos.ToString("F2") +
+                " dist=" + dist.ToString("F2") + "m occupied=" +
+                CountOccupiedSlots(storage) + "/" + storage.ItemSlots.Count;
+        }
+
+        private StorageEntity FindNearestStorage(LoadingDock dock, float maxDistance)
+        {
+            // Scope candidates to storages whose world position lies inside the dock's
+            // parent property bounds. The game has no formal dock<->storage binding,
+            // so property containment is the strongest association we can derive.
+            var pos = dock.transform.position;
+            var prop = dock.ParentProperty;
             StorageEntity best = null;
             float bestDist = maxDistance;
 
-            // Search baked-in WorldStorageEntity instances
             foreach (var s in WorldStorageEntity.All)
             {
                 if (s == null || !s.gameObject.activeInHierarchy) continue;
-                float dist = Vector3.Distance(s.transform.position, position);
+                if (!prop.DoBoundsContainPoint(s.transform.position)) continue;
+                float dist = Vector3.Distance(s.transform.position, pos);
                 if (dist < bestDist) { best = s; bestDist = dist; }
             }
 
-            // Search player-placed PlaceableStorageEntity instances
             foreach (var p in FindObjectsOfType<PlaceableStorageEntity>())
             {
                 if (p == null || !p.gameObject.activeInHierarchy || p.StorageEntity == null) continue;
-                float dist = Vector3.Distance(p.transform.position, position);
+                if (!prop.DoBoundsContainPoint(p.transform.position)) continue;
+                float dist = Vector3.Distance(p.transform.position, pos);
                 if (dist < bestDist) { best = p.StorageEntity; bestDist = dist; }
             }
 
@@ -1459,7 +1493,10 @@ namespace DeliveryDriversMod
                     MelonLogger.Error("Dock '" + dock.Name + "' has no Parking assigned");
                     return false;
                 }
-                assignment.ResolvedStops.Add(new ResolvedStop { Dock = dock, Parking = dock.Parking });
+                var storage = FindNearestStorage(dock, STORAGE_LOT_SEARCH_RADIUS);
+                assignment.ResolvedStops.Add(new ResolvedStop {
+                    Dock = dock, Parking = dock.Parking, Storage = storage
+                });
             }
             return true;
         }
@@ -1486,9 +1523,8 @@ namespace DeliveryDriversMod
             return docks;
         }
 
-        private bool PopulateDockStorage(LoadingDock dock, string itemId, int count)
+        private bool PopulateDockStorage(StorageEntity storage, LoadingDock dock, string itemId, int count)
         {
-            var storage = FindNearestStorage(dock.transform.position, STORAGE_LOT_SEARCH_RADIUS);
             if (storage == null)
             {
                 MelonLogger.Warning("No WorldStorageEntity near dock '" + dock.Name +
