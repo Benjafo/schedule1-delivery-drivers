@@ -62,6 +62,11 @@ namespace DeliveryDriversMod
         private RouteAssignment _routeAssignment;
         private float _routeStartTime;
 
+        // GUID of the dock the vehicle was just released from; consumed once in EnterDriving
+        // to teleport the vehicle to that dock's cached approach point, sidestepping the
+        // graph dead-end Park() leaves us in on unpark.
+        private Guid? _previousDockGUID;
+
         // State
         private DriverState _state = DriverState.Idle;
         private float _stateTimer;
@@ -128,6 +133,7 @@ namespace DeliveryDriversMod
             _sourceDock = null;
             _destDock = null;
             _routeAssignment = null;
+            _previousDockGUID = null;
             _state = DriverState.Idle;
         }
 
@@ -748,6 +754,25 @@ namespace DeliveryDriversMod
             {
                 MelonLogger.Warning("ExitPark failed (" + ex.Message + "), continuing anyway");
             }
+
+            // Outbound teleport: Park() snapped us to the dock's spot, which sits on a
+            // graph dead-end. Return the vehicle to the cached approach point that the
+            // inbound probe found navigable, then Navigate proceeds normally from there.
+            if (_previousDockGUID.HasValue &&
+                _dockApproachCache.TryGetValue(_previousDockGUID.Value, out Vector3 outboundStart))
+            {
+                Vector3 before = _vehicle.transform.position;
+                _vehicle.transform.position = outboundStart + Vector3.up * 0.5f;
+                if (_vehicle.Rb != null)
+                {
+                    _vehicle.Rb.velocity = Vector3.zero;
+                    _vehicle.Rb.angularVelocity = Vector3.zero;
+                }
+                MelonLogger.Msg("OUTBOUND teleport: " + before.ToString("F2") +
+                    " -> " + _vehicle.transform.position.ToString("F2") +
+                    " (cached approach for previous dock)");
+            }
+            _previousDockGUID = null;
         }
 
         private void UpdateDriving()
@@ -1230,6 +1255,7 @@ namespace DeliveryDriversMod
 
             MelonLogger.Msg("Releasing dock: " + dock.Name);
 
+            _previousDockGUID = dock.GUID;
             dock.SetStaticOccupant(null);
             dock.VehicleDetector.Clear();
 
@@ -1333,6 +1359,7 @@ namespace DeliveryDriversMod
             _sourceDock = null;
             _destDock = null;
             _routeAssignment = null;
+            _previousDockGUID = null;
             _state = DriverState.Idle;
         }
 
