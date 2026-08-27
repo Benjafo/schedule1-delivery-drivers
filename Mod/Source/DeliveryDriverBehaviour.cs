@@ -77,6 +77,14 @@ namespace DeliveryDriversMod
         private Vector3 _navStartPos;
         private Vector3 _navDestPos;
 
+        // Mode-2 stuck-state sampler (Phase 4 triage)
+        private const float STUCK_SAMPLE_INTERVAL = 2f;
+        private const float STUCK_TELEPORT_JUMP_M = 5f; // a jump larger than this between samples implies engine recovery teleport
+        private float _lastStuckSampleTime;
+        private Vector3 _lastSamplePos;
+        private bool _everStuckThisLeg;
+        private bool _everReversedThisLeg;
+
         // Approach-point probe (M5.5 mode-1 fix)
         private enum ProbePhase { NotStarted, InFlight, Complete, Failed }
         private const int MAX_PROBE_CANDIDATES = 36;
@@ -90,6 +98,19 @@ namespace DeliveryDriversMod
         private int _probeIndex;
         private bool _probeCalcCallbackFired;
         private NavigationUtility.ENavigationCalculationResult _probeCalcResult;
+
+        // Mode-2 stuck watchdog + bounded recovery (M5.5 Phase 5)
+        private const float WATCHDOG_WINDOW_S = 20f;
+        private const float MIN_PROGRESS_M = 1.0f;
+        private const float MIN_ODOMETER_M = 1.5f;
+        private const int MAX_RECOVERY_ATTEMPTS = 3;
+        private readonly List<float> _wTime = new List<float>();
+        private readonly List<Vector3> _wPos = new List<Vector3>();
+        private readonly List<float> _wDist = new List<float>();
+        private int _recoveryAttempts;
+        private bool _isRecovering;
+        private bool _recoveryProbeActive;   // probe in flight is for recovery, not initial mode-1
+        private int _recoveryProbeStartIndex; // candidate index the next recovery probe begins from
 
         public bool IsRunning => _state != DriverState.Idle && _state != DriverState.Done;
 
@@ -134,6 +155,11 @@ namespace DeliveryDriversMod
             _destDock = null;
             _routeAssignment = null;
             _previousDockGUID = null;
+            _isRecovering = false;
+            _recoveryProbeActive = false;
+            _recoveryAttempts = 0;
+            _recoveryProbeStartIndex = 0;
+            ResetWatchdogWindow();
             _state = DriverState.Idle;
         }
 
@@ -777,6 +803,20 @@ namespace DeliveryDriversMod
 
         private void UpdateDriving()
         {
+            // Mode-2 stuck sampler + watchdog: while the AI is actively driving,
+            // sample stuck/reverse/graph state and evaluate the pin window.
+            if (_vehicle != null && _vehicle.Agent != null && _vehicle.Agent.AutoDriving &&
+                Time.time - _lastStuckSampleTime >= STUCK_SAMPLE_INTERVAL)
+            {
+                bool pinned = SampleStuckState();
+                _lastStuckSampleTime = Time.time;
+                if (pinned && !_isRecovering)
+                {
+                    BeginRecovery();
+                    return;
+                }
+            }
+
             // If Navigate's callback already fired, handle the result
             if (_navigationCallbackFired)
             {
@@ -784,7 +824,8 @@ namespace DeliveryDriversMod
                 switch (_navigationResult)
                 {
                     case VehicleAgent.ENavigationResult.Complete:
-                        MelonLogger.Msg("NAV end: result=Complete elapsed=" + elapsed.ToString("F2") + "s");
+                        MelonLogger.Msg("NAV end: result=Complete elapsed=" + elapsed.ToString("F2") +
+                            "s everStuck=" + _everStuckThisLeg + " everReversed=" + _everReversedThisLeg);
                         if (_navOverridePoint.HasValue)
                         {
                             float gap = Vector3.Distance(_vehicle.transform.position, _destination.EntryPoint.position);
@@ -854,6 +895,27 @@ namespace DeliveryDriversMod
                 " [" + destProp + "] dist=" + dist.ToString("F1") + "m" +
                 (_navOverridePoint.HasValue ? " (probe-resolved)" : ""));
 
+            // Log DriveFlags config once per leg + reset the stuck sampler
+            var flags = _vehicle.Agent.Flags;
+            if (flags != null)
+            {
+                MelonLogger.Msg("  NAV flags: ObstacleMode=" + flags.ObstacleMode +
+                    " StuckDetection=" + flags.StuckDetection +
+                    " UseRoads=" + flags.UseRoads +
+                    " SpeedLimitMult=" + flags.SpeedLimitMultiplier.ToString("F2"));
+            }
+            _lastStuckSampleTime = Time.time;
+            _lastSamplePos = _navStartPos;
+            _everStuckThisLeg = false;
+            _everReversedThisLeg = false;
+
+            // Fresh leg: reset the mode-2 watchdog + recovery state
+            _recoveryAttempts = 0;
+            _isRecovering = false;
+            _recoveryProbeActive = false;
+            _recoveryProbeStartIndex = 0;
+            ResetWatchdogWindow();
+
             try
             {
                 _vehicle.Agent.Navigate(
@@ -867,6 +929,163 @@ namespace DeliveryDriversMod
                 MelonLogger.Error("Navigate() threw: " + ex);
                 SetState(DriverState.Done);
             }
+        }
+
+        private void ResetWatchdogWindow()
+        {
+            _wTime.Clear();
+            _wPos.Clear();
+            _wDist.Clear();
+        }
+
+        // --- Mode-2 stuck sampler + watchdog (Phase 4 triage / Phase 5 fix) -
+
+        // Returns true when the rolling window declares a pin (recovery should begin).
+        private bool SampleStuckState()
+        {
+            var agent = _vehicle.Agent;
+            Vector3 pos = _vehicle.transform.position;
+            float moved = Vector3.Distance(pos, _lastSamplePos);
+            bool stuck = false, reversing = false, onGraph = false;
+            try
+            {
+                stuck = agent.GetIsStuck();
+                reversing = agent.IsReversing;
+                onGraph = agent.IsOnVehicleGraph();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("STUCK sample failed: " + ex.Message);
+                _lastSamplePos = pos;
+                return false;
+            }
+
+            if (stuck) _everStuckThisLeg = true;
+            if (reversing) _everReversedThisLeg = true;
+
+            string note = "";
+            if (moved > STUCK_TELEPORT_JUMP_M)
+                note = " <-- JUMP " + moved.ToString("F1") + "m (likely engine recovery teleport)";
+
+            MelonLogger.Msg("STUCK sample: speed=" + _vehicle.Speed_Kmh.ToString("F1") +
+                "km/h moved=" + moved.ToString("F2") + "m stuck=" + stuck +
+                " reversing=" + reversing + " onGraph=" + onGraph +
+                " pos=" + pos.ToString("F1") + " [" + DescribeNavPoint(pos) + "]" + note);
+
+            _lastSamplePos = pos;
+
+            // --- Watchdog: push into the rolling window and evaluate ---
+            float now = Time.time;
+            float distToDest = Vector3.Distance(pos, _navDestPos);
+            _wTime.Add(now);
+            _wPos.Add(pos);
+            _wDist.Add(distToDest);
+            while (_wTime.Count > 1 && now - _wTime[0] > WATCHDOG_WINDOW_S)
+            {
+                _wTime.RemoveAt(0);
+                _wPos.RemoveAt(0);
+                _wDist.RemoveAt(0);
+            }
+
+            // Arm only after a full window has elapsed since NAV begin (lets
+            // unpark/accel settle and the buffer fill). Never abort a leg that
+            // hasn't had a fair chance to make progress.
+            bool armed = (now - _navStartTime) >= WATCHDOG_WINDOW_S && _wTime.Count >= 2;
+            if (!armed)
+            {
+                MelonLogger.Msg("WATCHDOG: armed=False (warming up, " +
+                    (now - _navStartTime).ToString("F0") + "s/" + WATCHDOG_WINDOW_S.ToString("F0") + "s)");
+                return false;
+            }
+
+            float progress = _wDist[0] - distToDest; // positive = net closer to dest
+            float odometer = 0f;
+            for (int i = 1; i < _wPos.Count; i++)
+                odometer += Vector3.Distance(_wPos[i - 1], _wPos[i]);
+            bool pin = progress < MIN_PROGRESS_M && odometer < MIN_ODOMETER_M;
+            MelonLogger.Msg("WATCHDOG: progress=" + progress.ToString("F2") + "m odometer=" +
+                odometer.ToString("F2") + "m window=" + (now - _wTime[0]).ToString("F0") +
+                "s armed=True pin=" + pin);
+            return pin;
+        }
+
+        // --- Mode-2 bounded recovery (Phase 5) ------------------------------
+
+        private void BeginRecovery()
+        {
+            var dock = _routeAssignment?.CurrentResolvedStop.Dock;
+            string dockName = dock != null ? dock.Name : "?";
+            _recoveryAttempts++;
+            MelonLogger.Warning("MODE2 recovery: pin detected at " +
+                _vehicle.transform.position.ToString("F2") + " near " + dockName +
+                " — attempt " + _recoveryAttempts + "/" + MAX_RECOVERY_ATTEMPTS);
+
+            if (_recoveryAttempts > MAX_RECOVERY_ATTEMPTS)
+            {
+                AbortLeg(dockName);
+                return;
+            }
+
+            _isRecovering = true;
+            try
+            {
+                if (_vehicle.Agent != null) _vehicle.Agent.StopNavigating();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("StopNavigating threw: " + ex.Message);
+            }
+            _navigationCallbackFired = false; // consume the deliberate Stopped callback
+
+            // Ring-probe the destination dock, starting past the last-used recovery
+            // point so each retry tries a genuinely different escape.
+            Vector3 entry = _destination.EntryPoint.position;
+            _probeCandidates = GenerateRingCandidates(entry);
+            _probeIndex = Mathf.Clamp(_recoveryProbeStartIndex, 0, _probeCandidates.Count - 1);
+            _probeCalcCallbackFired = false;
+            _probePhase = ProbePhase.InFlight;
+            _recoveryProbeActive = true;
+            MelonLogger.Msg("MODE2 probe: dock=" + dockName + " entry=" + entry.ToString("F2") +
+                " startIndex=" + _probeIndex + " candidates=" + _probeCandidates.Count);
+            IssueProbe(_probeCandidates[_probeIndex]);
+        }
+
+        private void CompleteRecovery(Vector3 point)
+        {
+            var dock = _routeAssignment.CurrentResolvedStop.Dock;
+            _dockApproachCache[dock.GUID] = point;
+            // Teleport out of the wedge to the reachable approach point, then let
+            // Park() snap into the dock spot (same as the mode-1 + Park flow).
+            _vehicle.transform.position = point + Vector3.up * 0.5f;
+            if (_vehicle.Rb != null)
+            {
+                _vehicle.Rb.velocity = Vector3.zero;
+                _vehicle.Rb.angularVelocity = Vector3.zero;
+            }
+            _recoveryProbeStartIndex = _probeIndex + 1; // next retry skips this point
+            _probePhase = ProbePhase.NotStarted;
+            _recoveryProbeActive = false;
+            _isRecovering = false;
+            MelonLogger.Msg("MODE2 recovery success: dock=" + dock.Name + " candidate " +
+                (_probeIndex + 1) + "/" + _probeCandidates.Count + " at " + point.ToString("F2") +
+                " — teleported out of wedge, parking");
+            SetState(DriverState.Parking);
+        }
+
+        private void AbortLeg(string dockName)
+        {
+            MelonLogger.Error("MODE2 ABORT: driver could not reach dock " + dockName + " after " +
+                MAX_RECOVERY_ATTEMPTS + " recovery attempts — aborting route");
+            _isRecovering = false;
+            _recoveryProbeActive = false;
+            _probePhase = ProbePhase.NotStarted;
+            try
+            {
+                if (_vehicle != null && _vehicle.Agent != null) _vehicle.Agent.StopNavigating();
+            }
+            catch (Exception) { }
+            _navigationCallbackFired = false;
+            SetState(DriverState.ExitingVehicle);
         }
 
         // --- Ring probe (mode-1 fix) ----------------------------------------
@@ -888,28 +1107,44 @@ namespace DeliveryDriversMod
         {
             if (!_probeCalcCallbackFired) return;
 
+            var dock = _routeAssignment.CurrentResolvedStop.Dock;
+            string tag = _recoveryProbeActive ? "MODE2 probe" : "PROBE";
             Vector3 current = _probeCandidates[_probeIndex];
             if (_probeCalcResult == NavigationUtility.ENavigationCalculationResult.Success)
             {
-                var dock = _routeAssignment.CurrentResolvedStop.Dock;
-                _dockApproachCache[dock.GUID] = current;
-                _navOverridePoint = current;
-                _probePhase = ProbePhase.Complete;
-                MelonLogger.Msg("PROBE success: dock=" + dock.Name +
-                    " candidate " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
-                    " at " + current.ToString("F2") + " (cached)");
+                if (_recoveryProbeActive)
+                {
+                    CompleteRecovery(current);
+                }
+                else
+                {
+                    _dockApproachCache[dock.GUID] = current;
+                    _navOverridePoint = current;
+                    _probePhase = ProbePhase.Complete;
+                    MelonLogger.Msg("PROBE success: dock=" + dock.Name +
+                        " candidate " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
+                        " at " + current.ToString("F2") + " (cached)");
+                }
                 return;
             }
 
-            MelonLogger.Msg("PROBE try " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
+            MelonLogger.Msg(tag + " try " + (_probeIndex + 1) + "/" + _probeCandidates.Count +
                 " at " + current.ToString("F2") + " -> Failed");
             _probeIndex++;
             if (_probeIndex >= _probeCandidates.Count)
             {
-                var dock = _routeAssignment.CurrentResolvedStop.Dock;
-                MelonLogger.Error("PROBE FAILED: no reachable approach point near dock " + dock.Name +
-                    " after " + _probeCandidates.Count + " candidates — aborting route");
-                _probePhase = ProbePhase.Failed;
+                if (_recoveryProbeActive)
+                {
+                    MelonLogger.Error("MODE2 probe: no reachable point near dock " + dock.Name +
+                        " from current position (tried " + _probeCandidates.Count + ")");
+                    AbortLeg(dock.Name);
+                }
+                else
+                {
+                    MelonLogger.Error("PROBE FAILED: no reachable approach point near dock " + dock.Name +
+                        " after " + _probeCandidates.Count + " candidates — aborting route");
+                    _probePhase = ProbePhase.Failed;
+                }
                 return;
             }
             _probeCalcCallbackFired = false;
@@ -1360,6 +1595,11 @@ namespace DeliveryDriversMod
             _destDock = null;
             _routeAssignment = null;
             _previousDockGUID = null;
+            _isRecovering = false;
+            _recoveryProbeActive = false;
+            _recoveryAttempts = 0;
+            _recoveryProbeStartIndex = 0;
+            ResetWatchdogWindow();
             _state = DriverState.Idle;
         }
 
