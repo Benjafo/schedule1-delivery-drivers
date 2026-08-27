@@ -10,7 +10,8 @@
         <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     
         <!-- VARS -->
-        <GameDir>S:\SteamLibrary\steamapps\common\Schedule I</GameDir>
+        <GameDir Condition="'$(OS)' == 'Windows_NT'">S:\SteamLibrary\steamapps\common\Schedule I</GameDir>
+        <GameDir Condition="'$(OS)' != 'Windows_NT'">/mnt/s/SteamLibrary/steamapps/common/Schedule I</GameDir>
         <ManagedDir>$(GameDir)\Schedule I_Data\Managed</ManagedDir>
         <MelonDir>$(GameDir)\MelonLoader</MelonDir>
     </PropertyGroup>

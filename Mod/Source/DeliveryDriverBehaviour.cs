@@ -112,6 +112,18 @@ namespace DeliveryDriversMod
         private bool _recoveryProbeActive;   // probe in flight is for recovery, not initial mode-1
         private int _recoveryProbeStartIndex; // candidate index the next recovery probe begins from
 
+        // Departure smoothing: fast-pin detection + forward-nudge recovery (M5.5 Phase 6)
+        private const float FASTPIN_ARM_S = 10f;
+        private const float FASTPIN_WINDOW_S = 8f;
+        private const float FASTPIN_ODOMETER_M = 0.35f; // hard-pin only; healthy anchor ~1.1m/8s
+        private const float NUDGE_BASE_M = 18f;  // first nudge: hop this far along the remaining path
+        private const float NUDGE_STEP_M = 18f;  // each retry hops this much further
+        // Learned per-property road-side exit points; future departures teleport here
+        // before Navigate instead of fighting the property's broken driveway graph.
+        private static readonly Dictionary<string, Vector3> _propertyExitCache = new Dictionary<string, Vector3>();
+        private bool _nudgeCalcActive;
+        private PathSmoothingUtility.SmoothedPath _probeCalcPath;
+
         public bool IsRunning => _state != DriverState.Idle && _state != DriverState.Done;
 
         private const float WALK_TIMEOUT = 15f;
@@ -159,6 +171,7 @@ namespace DeliveryDriversMod
             _recoveryProbeActive = false;
             _recoveryAttempts = 0;
             _recoveryProbeStartIndex = 0;
+            _nudgeCalcActive = false;
             ResetWatchdogWindow();
             _state = DriverState.Idle;
         }
@@ -781,10 +794,33 @@ namespace DeliveryDriversMod
                 MelonLogger.Warning("ExitPark failed (" + ex.Message + "), continuing anyway");
             }
 
+            // Departure pre-emption: a prior outbound leg from this property pinned and
+            // the nudge recovery learned a road-side exit point. Start there — skips the
+            // property's broken driveway graph entirely (one stationary reposition at
+            // departure instead of a visible mid-drive pin + teleport).
+            bool exitTeleported = false;
+            var departProp = FindPropertyAt(_vehicle.transform.position);
+            if (departProp != null && _destination != null &&
+                !departProp.DoBoundsContainPoint(_destination.EntryPoint.position) &&
+                _propertyExitCache.TryGetValue(departProp.PropertyName, out Vector3 exitPoint))
+            {
+                Vector3 beforeExit = _vehicle.transform.position;
+                _vehicle.transform.position = exitPoint + Vector3.up * 0.5f;
+                if (_vehicle.Rb != null)
+                {
+                    _vehicle.Rb.velocity = Vector3.zero;
+                    _vehicle.Rb.angularVelocity = Vector3.zero;
+                }
+                exitTeleported = true;
+                MelonLogger.Msg("EXIT teleport: " + beforeExit.ToString("F2") +
+                    " -> " + _vehicle.transform.position.ToString("F2") +
+                    " (cached exit for " + departProp.PropertyName + ")");
+            }
+
             // Outbound teleport: Park() snapped us to the dock's spot, which sits on a
             // graph dead-end. Return the vehicle to the cached approach point that the
             // inbound probe found navigable, then Navigate proceeds normally from there.
-            if (_previousDockGUID.HasValue &&
+            if (!exitTeleported && _previousDockGUID.HasValue &&
                 _dockApproachCache.TryGetValue(_previousDockGUID.Value, out Vector3 outboundStart))
             {
                 Vector3 before = _vehicle.transform.position;
@@ -855,6 +891,13 @@ namespace DeliveryDriversMod
                         SetState(DriverState.Done);
                         break;
                 }
+                return;
+            }
+
+            // Nudge path calculation in flight: pick the hop point once resolved
+            if (_nudgeCalcActive)
+            {
+                TickNudge();
                 return;
             }
 
@@ -963,8 +1006,11 @@ namespace DeliveryDriversMod
             if (stuck) _everStuckThisLeg = true;
             if (reversing) _everReversedThisLeg = true;
 
+            // Flag only movement inconsistent with reported speed — normal driving at
+            // 22km/h covers ~12m per sample and is not a jump.
             string note = "";
-            if (moved > STUCK_TELEPORT_JUMP_M)
+            float speedExpectedM = Mathf.Abs(_vehicle.Speed_Kmh) / 3.6f * STUCK_SAMPLE_INTERVAL;
+            if (moved > Mathf.Max(STUCK_TELEPORT_JUMP_M, speedExpectedM * 2f))
                 note = " <-- JUMP " + moved.ToString("F1") + "m (likely engine recovery teleport)";
 
             MelonLogger.Msg("STUCK sample: speed=" + _vehicle.Speed_Kmh.ToString("F1") +
@@ -985,6 +1031,27 @@ namespace DeliveryDriversMod
                 _wTime.RemoveAt(0);
                 _wPos.RemoveAt(0);
                 _wDist.RemoveAt(0);
+            }
+
+            // Fast-pin: a hard pin (near-zero odometer over a short window) is
+            // unambiguous well before the full window arms. Threshold sits ~3x below
+            // the known-healthy crawl anchor so the lax full-window logic still
+            // governs the gray zone; a false fire only costs a small forward nudge.
+            if (now - _navStartTime >= FASTPIN_ARM_S)
+            {
+                float fastOdo = 0f, fastSpan = 0f;
+                for (int i = _wPos.Count - 1; i > 0; i--)
+                {
+                    if (now - _wTime[i - 1] > FASTPIN_WINDOW_S) break;
+                    fastOdo += Vector3.Distance(_wPos[i - 1], _wPos[i]);
+                    fastSpan = now - _wTime[i - 1];
+                }
+                if (fastSpan >= FASTPIN_WINDOW_S - STUCK_SAMPLE_INTERVAL && fastOdo < FASTPIN_ODOMETER_M)
+                {
+                    MelonLogger.Msg("WATCHDOG: FAST-PIN odometer=" + fastOdo.ToString("F2") +
+                        "m over " + fastSpan.ToString("F0") + "s — declaring pin early");
+                    return true;
+                }
             }
 
             // Arm only after a full window has elapsed since NAV begin (lets
@@ -1037,6 +1104,24 @@ namespace DeliveryDriversMod
             }
             _navigationCallbackFired = false; // consume the deliberate Stopped callback
 
+            // Early attempts: forward-nudge — hop a short distance along the remaining
+            // path (past the obstruction) and keep driving. Preserves the journey; the
+            // player sees a small correction, not a vanish. Final attempt falls back to
+            // the destination ring-probe (teleport to approach + park).
+            if (_recoveryAttempts < MAX_RECOVERY_ATTEMPTS)
+            {
+                _nudgeCalcActive = true;
+                _probeCalcCallbackFired = false;
+                MelonLogger.Msg("MODE2 nudge: calculating path from pin to target " +
+                    _navDestPos.ToString("F2"));
+                IssueProbe(_navDestPos);
+                return;
+            }
+            BeginDestinationRingProbe(dockName);
+        }
+
+        private void BeginDestinationRingProbe(string dockName)
+        {
             // Ring-probe the destination dock, starting past the last-used recovery
             // point so each retry tries a genuinely different escape.
             Vector3 entry = _destination.EntryPoint.position;
@@ -1050,10 +1135,102 @@ namespace DeliveryDriversMod
             IssueProbe(_probeCandidates[_probeIndex]);
         }
 
+        private void TickNudge()
+        {
+            if (!_probeCalcCallbackFired) return;
+            _nudgeCalcActive = false;
+
+            var dock = _routeAssignment?.CurrentResolvedStop.Dock;
+            string dockName = dock != null ? dock.Name : "?";
+            var path = _probeCalcPath;
+            if (_probeCalcResult != NavigationUtility.ENavigationCalculationResult.Success ||
+                path == null || path.vectorPath == null || path.vectorPath.Count < 2)
+            {
+                MelonLogger.Warning("MODE2 nudge: no path from pin to target — " +
+                    "falling back to destination probe");
+                BeginDestinationRingProbe(dockName);
+                return;
+            }
+
+            float totalLen = 0f;
+            for (int i = 1; i < path.vectorPath.Count; i++)
+                totalLen += Vector3.Distance(path.vectorPath[i - 1], path.vectorPath[i]);
+
+            float want = NUDGE_BASE_M + (_recoveryAttempts - 1) * NUDGE_STEP_M;
+            float hop = Mathf.Min(want, totalLen - 2f);
+            if (hop < 4f)
+            {
+                // Remaining path is basically the destination itself — nudging is
+                // pointless, go straight to the approach-point fallback.
+                MelonLogger.Msg("MODE2 nudge: remaining path only " + totalLen.ToString("F1") +
+                    "m — falling back to destination probe");
+                BeginDestinationRingProbe(dockName);
+                return;
+            }
+
+            Vector3 pinPos = _vehicle.transform.position;
+            Vector3 nudgePoint = PointAlongPath(path.vectorPath, hop);
+            _vehicle.transform.position = nudgePoint + Vector3.up * 0.5f;
+            if (_vehicle.Rb != null)
+            {
+                _vehicle.Rb.velocity = Vector3.zero;
+                _vehicle.Rb.angularVelocity = Vector3.zero;
+            }
+
+            // Outbound leg leaving a property: the nudge point that cleared the wedge
+            // is a good road-side exit — cache it so future departures pre-empt the pin.
+            var pinProp = FindPropertyAt(pinPos);
+            if (pinProp != null && !pinProp.DoBoundsContainPoint(_navDestPos))
+            {
+                _propertyExitCache[pinProp.PropertyName] = nudgePoint;
+                MelonLogger.Msg("EXIT learned: property=" + pinProp.PropertyName +
+                    " point=" + nudgePoint.ToString("F2"));
+            }
+
+            MelonLogger.Msg("MODE2 nudge: hopped " + hop.ToString("F1") + "m along path (of " +
+                totalLen.ToString("F1") + "m remaining) to " + nudgePoint.ToString("F2") +
+                " — resuming drive");
+
+            // Resume the same leg with a fresh watchdog window; recovery attempt
+            // count is preserved so repeated pins still escalate to the fallback.
+            _navStartPos = _vehicle.transform.position;
+            _navStartTime = Time.time;
+            _lastStuckSampleTime = Time.time;
+            _lastSamplePos = _navStartPos;
+            ResetWatchdogWindow();
+            _isRecovering = false;
+            try
+            {
+                _vehicle.Agent.Navigate(
+                    _navDestPos,
+                    null,
+                    new VehicleAgent.NavigationCallback(OnNavigationComplete)
+                );
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Error("Navigate() threw after nudge: " + ex);
+                SetState(DriverState.Done);
+            }
+        }
+
+        private static Vector3 PointAlongPath(List<Vector3> points, float distance)
+        {
+            float walked = 0f;
+            for (int i = 1; i < points.Count; i++)
+            {
+                float seg = Vector3.Distance(points[i - 1], points[i]);
+                if (walked + seg >= distance && seg > 0f)
+                    return Vector3.Lerp(points[i - 1], points[i], (distance - walked) / seg);
+                walked += seg;
+            }
+            return points[points.Count - 1];
+        }
+
         private void CompleteRecovery(Vector3 point)
         {
-            var dock = _routeAssignment.CurrentResolvedStop.Dock;
-            _dockApproachCache[dock.GUID] = point;
+            var dock = _routeAssignment?.CurrentResolvedStop.Dock;
+            if (dock != null) _dockApproachCache[dock.GUID] = point;
             // Teleport out of the wedge to the reachable approach point, then let
             // Park() snap into the dock spot (same as the mode-1 + Park flow).
             _vehicle.transform.position = point + Vector3.up * 0.5f;
@@ -1066,7 +1243,7 @@ namespace DeliveryDriversMod
             _probePhase = ProbePhase.NotStarted;
             _recoveryProbeActive = false;
             _isRecovering = false;
-            MelonLogger.Msg("MODE2 recovery success: dock=" + dock.Name + " candidate " +
+            MelonLogger.Msg("MODE2 recovery success: dock=" + (dock != null ? dock.Name : "?") + " candidate " +
                 (_probeIndex + 1) + "/" + _probeCandidates.Count + " at " + point.ToString("F2") +
                 " — teleported out of wedge, parking");
             SetState(DriverState.Parking);
@@ -1107,7 +1284,8 @@ namespace DeliveryDriversMod
         {
             if (!_probeCalcCallbackFired) return;
 
-            var dock = _routeAssignment.CurrentResolvedStop.Dock;
+            var dock = _routeAssignment?.CurrentResolvedStop.Dock;
+            string dockName = dock != null ? dock.Name : "?";
             string tag = _recoveryProbeActive ? "MODE2 probe" : "PROBE";
             Vector3 current = _probeCandidates[_probeIndex];
             if (_probeCalcResult == NavigationUtility.ENavigationCalculationResult.Success)
@@ -1135,9 +1313,9 @@ namespace DeliveryDriversMod
             {
                 if (_recoveryProbeActive)
                 {
-                    MelonLogger.Error("MODE2 probe: no reachable point near dock " + dock.Name +
+                    MelonLogger.Error("MODE2 probe: no reachable point near dock " + dockName +
                         " from current position (tried " + _probeCandidates.Count + ")");
-                    AbortLeg(dock.Name);
+                    AbortLeg(dockName);
                 }
                 else
                 {
@@ -1188,6 +1366,7 @@ namespace DeliveryDriversMod
             PathSmoothingUtility.SmoothedPath path)
         {
             _probeCalcResult = result;
+            _probeCalcPath = path;
             _probeCalcCallbackFired = true;
         }
 
@@ -1229,6 +1408,21 @@ namespace DeliveryDriversMod
                 }
             }
             return list;
+        }
+
+        private static Property FindPropertyAt(Vector3 pos)
+        {
+            foreach (var prop in Property.OwnedProperties)
+            {
+                if (prop != null && prop.DoBoundsContainPoint(pos))
+                    return prop;
+            }
+            foreach (var prop in Property.UnownedProperties)
+            {
+                if (prop != null && prop.DoBoundsContainPoint(pos))
+                    return prop;
+            }
+            return null;
         }
 
         private static string DescribeNavPoint(Vector3 pos)
@@ -1599,6 +1793,7 @@ namespace DeliveryDriversMod
             _recoveryProbeActive = false;
             _recoveryAttempts = 0;
             _recoveryProbeStartIndex = 0;
+            _nudgeCalcActive = false;
             ResetWatchdogWindow();
             _state = DriverState.Idle;
         }

@@ -198,3 +198,44 @@ Report:
 - Patching the engine's own stuck detection (we route around it).
 - Any route-engine / storage / state-machine change beyond the watchdog,
   recovery, and clean-abort path.
+
+---
+
+# Phase 6 addendum: departure smoothing (post-first-test)
+
+The first in-game run (2026-08-27) validated the watchdog end-to-end: two real
+pins at Hyland Manor's driveway wedge, two recoveries, 4-stop route completed,
+no hang. It also exposed two player-visible problems: the recovery teleported
+straight to the destination dock (probe candidate 1 = raw entry, graph-reachable
+even though physically blocked), making the vehicle "vanish" mid-drive; and the
+Hyland exit pin is deterministic — the nav graph's only route out passes the
+wedge, so the safety net fired on every departure. Fixes, keeping the
+watchdog/abort architecture unchanged:
+
+1. **Forward-nudge recovery (attempts 1–2).** On pin, calculate the path from
+   the pin to the current nav target and teleport 18m (then 36m on retry) along
+   it, then re-`Navigate` to the same target with a fresh watchdog window and
+   preserved attempt count. The player sees a small hop past the obstruction and
+   the drive continues. Attempt 3 keeps the old destination ring-probe
+   (teleport-to-approach + park) as the fallback; the abort path is unchanged.
+2. **Fast-pin detection.** A hard pin (odometer < 0.35m over 8s, armed 10s
+   after NAV begin) is declared early instead of waiting the full 20s window.
+   Threshold sits ~3x below the known-healthy crawl anchor; a false fire now
+   only costs a small forward nudge, not a route skip.
+3. **Learned per-property exit points.** When a nudge rescues an outbound leg
+   (pin inside a property, destination outside), the nudge point is cached per
+   property. Future departures from that property teleport there while still
+   stationary, before `Navigate` — pre-empting the known-bad driveway graph.
+   Session-scoped, like the dock-approach cache (persist in M6).
+4. **Log fix:** the `JUMP` annotation now compares movement against reported
+   speed instead of a flat 5m, so normal 22km/h driving isn't flagged as a
+   teleport.
+
+No player-facing notifications for recovered pins (recovered = non-event;
+surfacing it would read as "something is broken"). Only a clean abort is worth
+surfacing, and that belongs to M7's route reporting.
+
+Deferred (layer 3, plan later if wanted): mod-driven "valet" driving through
+property geometry — replace the engine AI only in the known-bad zone, hand off
+at the road. The engine AI is proven good on roads and only fails in
+driveways, but this needs a mini vehicle controller + clear-corridor finding.
