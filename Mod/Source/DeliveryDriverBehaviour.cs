@@ -116,11 +116,18 @@ namespace DeliveryDriversMod
         private const float FASTPIN_ARM_S = 10f;
         private const float FASTPIN_WINDOW_S = 8f;
         private const float FASTPIN_ODOMETER_M = 0.35f; // hard-pin only; healthy anchor ~1.1m/8s
-        private const float NUDGE_BASE_M = 18f;  // first nudge: hop this far along the remaining path
-        private const float NUDGE_STEP_M = 18f;  // each retry hops this much further
-        // Learned per-property road-side exit points; future departures teleport here
-        // before Navigate instead of fighting the property's broken driveway graph.
-        private static readonly Dictionary<string, Vector3> _propertyExitCache = new Dictionary<string, Vector3>();
+        private const float NUDGE_BASE_M = 8f;   // first nudge: hop this far along the remaining path
+        private const float NUDGE_STEP_M = 8f;   // each retry hops this much further
+        private const float EXIT_LEARN_RADIUS_M = 50f; // pin this close to leg start = departure-zone pin
+        // Learned road-side exit points, keyed by the dock the leg departed from
+        // (property bounds don't contain the wedge or even the dock approach, so
+        // dock identity is the reliable key). Future departures from that dock
+        // teleport here before Navigate instead of fighting the driveway graph.
+        private static readonly Dictionary<Guid, Vector3> _dockExitCache = new Dictionary<Guid, Vector3>();
+        private Guid? _departureDockGUID;        // dock the current leg departed from
+        private string _previousDockPropName;    // property of _previousDockGUID's dock
+        private string _departureDockPropName;
+        private bool _lastSampleOnGraph;
         private bool _nudgeCalcActive;
         private PathSmoothingUtility.SmoothedPath _probeCalcPath;
 
@@ -167,6 +174,9 @@ namespace DeliveryDriversMod
             _destDock = null;
             _routeAssignment = null;
             _previousDockGUID = null;
+            _previousDockPropName = null;
+            _departureDockGUID = null;
+            _departureDockPropName = null;
             _isRecovering = false;
             _recoveryProbeActive = false;
             _recoveryAttempts = 0;
@@ -794,15 +804,17 @@ namespace DeliveryDriversMod
                 MelonLogger.Warning("ExitPark failed (" + ex.Message + "), continuing anyway");
             }
 
-            // Departure pre-emption: a prior outbound leg from this property pinned and
-            // the nudge recovery learned a road-side exit point. Start there — skips the
-            // property's broken driveway graph entirely (one stationary reposition at
-            // departure instead of a visible mid-drive pin + teleport).
+            // Departure pre-emption: a prior leg departing this dock pinned in the
+            // driveway and the nudge recovery learned a road-side exit point. Start
+            // there — skips the broken driveway graph entirely (one stationary
+            // reposition at departure instead of a visible mid-drive pin + hop).
+            // Only when actually leaving the property; hops within it stay as-is.
             bool exitTeleported = false;
-            var departProp = FindPropertyAt(_vehicle.transform.position);
-            if (departProp != null && _destination != null &&
-                !departProp.DoBoundsContainPoint(_destination.EntryPoint.position) &&
-                _propertyExitCache.TryGetValue(departProp.PropertyName, out Vector3 exitPoint))
+            string destPropName = currentDock != null && currentDock.ParentProperty != null
+                ? currentDock.ParentProperty.PropertyName : null;
+            if (_previousDockGUID.HasValue &&
+                _previousDockPropName != null && _previousDockPropName != destPropName &&
+                _dockExitCache.TryGetValue(_previousDockGUID.Value, out Vector3 exitPoint))
             {
                 Vector3 beforeExit = _vehicle.transform.position;
                 _vehicle.transform.position = exitPoint + Vector3.up * 0.5f;
@@ -814,7 +826,7 @@ namespace DeliveryDriversMod
                 exitTeleported = true;
                 MelonLogger.Msg("EXIT teleport: " + beforeExit.ToString("F2") +
                     " -> " + _vehicle.transform.position.ToString("F2") +
-                    " (cached exit for " + departProp.PropertyName + ")");
+                    " (cached exit for departure from " + _previousDockPropName + ")");
             }
 
             // Outbound teleport: Park() snapped us to the dock's spot, which sits on a
@@ -834,7 +846,12 @@ namespace DeliveryDriversMod
                     " -> " + _vehicle.transform.position.ToString("F2") +
                     " (cached approach for previous dock)");
             }
+            // Remember which dock this leg departs from so a driveway pin's nudge
+            // point can be cached as that dock's exit (see TickNudge).
+            _departureDockGUID = _previousDockGUID;
+            _departureDockPropName = _previousDockPropName;
             _previousDockGUID = null;
+            _previousDockPropName = null;
         }
 
         private void UpdateDriving()
@@ -1005,6 +1022,7 @@ namespace DeliveryDriversMod
 
             if (stuck) _everStuckThisLeg = true;
             if (reversing) _everReversedThisLeg = true;
+            _lastSampleOnGraph = onGraph;
 
             // Flag only movement inconsistent with reported speed — normal driving at
             // 22km/h covers ~12m per sample and is not a jump.
@@ -1034,10 +1052,11 @@ namespace DeliveryDriversMod
             }
 
             // Fast-pin: a hard pin (near-zero odometer over a short window) is
-            // unambiguous well before the full window arms. Threshold sits ~3x below
-            // the known-healthy crawl anchor so the lax full-window logic still
-            // governs the gray zone; a false fire only costs a small forward nudge.
-            if (now - _navStartTime >= FASTPIN_ARM_S)
+            // unambiguous well before the full window arms. Off-graph only: a wedge
+            // pin samples onGraph=False, while a vehicle stopped ON the road graph is
+            // usually waiting behind an obstacle (traffic, NPC) — those get the
+            // patient full window so legitimate waits aren't teleported past.
+            if (!onGraph && now - _navStartTime >= FASTPIN_ARM_S)
             {
                 float fastOdo = 0f, fastSpan = 0f;
                 for (int i = _wPos.Count - 1; i > 0; i--)
@@ -1177,13 +1196,15 @@ namespace DeliveryDriversMod
                 _vehicle.Rb.angularVelocity = Vector3.zero;
             }
 
-            // Outbound leg leaving a property: the nudge point that cleared the wedge
-            // is a good road-side exit — cache it so future departures pre-empt the pin.
-            var pinProp = FindPropertyAt(pinPos);
-            if (pinProp != null && !pinProp.DoBoundsContainPoint(_navDestPos))
+            // Departure-zone wedge pin (off-graph, near the leg's start, on a leg that
+            // departed a dock): the nudge point that cleared it is a good exit — cache
+            // it under the departure dock so future departures pre-empt the pin.
+            // On-graph pins are road obstacles (traffic, debris), not exit geometry.
+            if (_departureDockGUID.HasValue && !_lastSampleOnGraph &&
+                Vector3.Distance(pinPos, _navStartPos) < EXIT_LEARN_RADIUS_M)
             {
-                _propertyExitCache[pinProp.PropertyName] = nudgePoint;
-                MelonLogger.Msg("EXIT learned: property=" + pinProp.PropertyName +
+                _dockExitCache[_departureDockGUID.Value] = nudgePoint;
+                MelonLogger.Msg("EXIT learned: departure dock at " + _departureDockPropName +
                     " point=" + nudgePoint.ToString("F2"));
             }
 
@@ -1408,21 +1429,6 @@ namespace DeliveryDriversMod
                 }
             }
             return list;
-        }
-
-        private static Property FindPropertyAt(Vector3 pos)
-        {
-            foreach (var prop in Property.OwnedProperties)
-            {
-                if (prop != null && prop.DoBoundsContainPoint(pos))
-                    return prop;
-            }
-            foreach (var prop in Property.UnownedProperties)
-            {
-                if (prop != null && prop.DoBoundsContainPoint(pos))
-                    return prop;
-            }
-            return null;
         }
 
         private static string DescribeNavPoint(Vector3 pos)
@@ -1685,6 +1691,7 @@ namespace DeliveryDriversMod
             MelonLogger.Msg("Releasing dock: " + dock.Name);
 
             _previousDockGUID = dock.GUID;
+            _previousDockPropName = dock.ParentProperty != null ? dock.ParentProperty.PropertyName : null;
             dock.SetStaticOccupant(null);
             dock.VehicleDetector.Clear();
 
@@ -1789,6 +1796,9 @@ namespace DeliveryDriversMod
             _destDock = null;
             _routeAssignment = null;
             _previousDockGUID = null;
+            _previousDockPropName = null;
+            _departureDockGUID = null;
+            _departureDockPropName = null;
             _isRecovering = false;
             _recoveryProbeActive = false;
             _recoveryAttempts = 0;

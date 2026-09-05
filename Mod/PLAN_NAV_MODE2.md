@@ -213,20 +213,29 @@ wedge, so the safety net fired on every departure. Fixes, keeping the
 watchdog/abort architecture unchanged:
 
 1. **Forward-nudge recovery (attempts 1–2).** On pin, calculate the path from
-   the pin to the current nav target and teleport 18m (then 36m on retry) along
+   the pin to the current nav target and teleport 8m (then 16m on retry) along
    it, then re-`Navigate` to the same target with a fresh watchdog window and
-   preserved attempt count. The player sees a small hop past the obstruction and
-   the drive continues. Attempt 3 keeps the old destination ring-probe
-   (teleport-to-approach + park) as the fallback; the abort path is unchanged.
-2. **Fast-pin detection.** A hard pin (odometer < 0.35m over 8s, armed 10s
-   after NAV begin) is declared early instead of waiting the full 20s window.
-   Threshold sits ~3x below the known-healthy crawl anchor; a false fire now
-   only costs a small forward nudge, not a route skip.
-3. **Learned per-property exit points.** When a nudge rescues an outbound leg
-   (pin inside a property, destination outside), the nudge point is cached per
-   property. Future departures from that property teleport there while still
-   stationary, before `Navigate` — pre-empting the known-bad driveway graph.
-   Session-scoped, like the dock-approach cache (persist in M6).
+   preserved attempt count. The player sees a short blink past the obstruction
+   ("the car reset to its track") and the drive continues. Attempt 3 keeps the
+   old destination ring-probe (teleport-to-approach + park) as the fallback;
+   the abort path is unchanged. Hops were originally 18m/36m; the second test
+   run showed that reads as too far — 8m steps chosen per user feedback.
+2. **Fast-pin detection — off-graph pins only.** A hard pin (odometer < 0.35m
+   over 8s, armed 10s after NAV begin) is declared early instead of waiting the
+   full 20s window, but ONLY when the vehicle samples `onGraph=False`. Test run
+   2 showed on-graph stops are usually the AI waiting behind a road obstacle
+   (leftover test NPCs/vehicles standing on the road — pins at (141.9,-103.5)
+   and (90.9,-106.5) matched restored test-NPC positions exactly); those get
+   the patient full window so legitimate waits aren't teleported past. Wedge
+   pins sample off-graph and are still caught in ~12s.
+3. **Learned exit points, keyed by departure dock.** When a nudge rescues an
+   off-graph pin within 50m of the leg's start on a leg that departed a dock,
+   the nudge point is cached under that dock's GUID. Future departures from
+   that dock to a different property teleport there while still stationary,
+   before `Navigate` — pre-empting the known-bad driveway graph. (Originally
+   keyed by property bounds; dead code in practice — the Hyland wedge and even
+   the dock approach point sit OUTSIDE `Property.DoBoundsContainPoint`, logging
+   as "open".) Session-scoped, like the dock-approach cache (persist in M6).
 4. **Log fix:** the `JUMP` annotation now compares movement against reported
    speed instead of a flat 5m, so normal 22km/h driving isn't flagged as a
    teleport.
